@@ -30,7 +30,7 @@ const CHILD_SCRIPTS = [
 function processInputFolder() {
   const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
 
-  for (const mimeType of [MimeType.CSV, MimeType.ZIP]) {
+  for (const mimeType of [MimeType.CSV, 'application/zip']) {
     const files = inputFolder.getFilesByType(mimeType);
     while (files.hasNext()) {
       const file = files.next();
