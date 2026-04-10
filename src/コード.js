@@ -19,7 +19,12 @@ const DRIVE_FOLDERS = {
 // ファイル名のプレフィックスで振り分け先を判定する
 const CHILD_SCRIPTS = [
   { prefix: 'act_', webAppUrl: 'https://script.google.com/macros/s/AKfycbwj9fQ2X_A9mZRwvlHUZD8vqlkvYzb2bPCzUwhsZv_vVxLYgjDbCnoqvvdTPDe4srXSvw/exec', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
-  { prefix: 'rpp_', webAppUrl: 'https://script.google.com/macros/s/AKfycbzZvxl5m7gTacon_dtM-c1VqktP6URaGqdmzYiEVsy7UvdUaEFi9uNY63_hqV3chv1Q/exec', desc: 'RPPパフォーマンス取込 (RPP-Track)' },
+  {
+    prefix: 'rpp_',
+    patterns: [/^\d{8}_item_list\.csv$/i],
+    webAppUrl: 'https://script.google.com/macros/s/AKfycbzZvxl5m7gTacon_dtM-c1VqktP6URaGqdmzYiEVsy7UvdUaEFi9uNY63_hqV3chv1Q/exec',
+    desc: 'RPPパフォーマンス取込 (RPP-Track)',
+  },
 ];
 
 
@@ -59,7 +64,17 @@ function processInputFolder() {
 
 function dispatchToChild_(file) {
   const fileName = file.getName();
-  const child = CHILD_SCRIPTS.find(c => fileName.startsWith(c.prefix));
+  const fileMimeType = file.getMimeType();
+
+  if (!isSupportedInputFile_(fileName, fileMimeType)) {
+    return {
+      status: 'error',
+      message: `未対応のファイル形式です: ${fileName} / ${fileMimeType}`,
+      rowsImported: 0,
+    };
+  }
+
+  const child = CHILD_SCRIPTS.find(c => matchChildScript_(c, fileName));
 
   if (!child) {
     return { status: 'error', message: '振り分けルールが未設定: ' + fileName, rowsImported: 0 };
@@ -107,6 +122,32 @@ function dispatchToChild_(file) {
   }
 
   return json;
+}
+
+function matchChildScript_(child, fileName) {
+  if (child.prefix && fileName.startsWith(child.prefix)) {
+    return true;
+  }
+
+  if (child.patterns) {
+    return child.patterns.some(pattern => pattern.test(fileName));
+  }
+
+  return false;
+}
+
+function isSupportedInputFile_(fileName, mimeType) {
+  return isCsvFile_(fileName, mimeType) || isZipFile_(fileName, mimeType);
+}
+
+function isCsvFile_(fileName, mimeType) {
+  const normalizedFileName = String(fileName || '').toLowerCase();
+  return normalizedFileName.endsWith('.csv') || mimeType === MimeType.CSV;
+}
+
+function isZipFile_(fileName, mimeType) {
+  const normalizedFileName = String(fileName || '').toLowerCase();
+  return normalizedFileName.endsWith('.zip') || mimeType === 'application/zip';
 }
 
 
