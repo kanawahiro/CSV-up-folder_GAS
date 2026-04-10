@@ -28,6 +28,18 @@ const CHILD_SCRIPTS = [
   },
 ];
 
+const RPP_UNYOU_CHILD = {
+  webAppUrl: 'https://script.google.com/macros/s/AKfycbzWLyIYL7l1gkcu7XwfoGHiW_YTOvkimmvFCatafggS5CEWMYSWNC5IpnaZSDrHP0Gw/exec',
+  desc: 'RPP運用CSV取込 (RPP-unyou)',
+};
+
+const RPP_UNYOU_FILE_PATTERNS = {
+  cpc: /^rpp_item_keyword_limelimedou_(\d{8})\d+\.csv$/i,
+  rank: /^rpp_keyword_ranking_limelimedou_(\d{8})\d{6}(?:_\d+)?\.csv$/i,
+};
+
+const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
+
 
 // ============================================================
 // メイン処理（タイマートリガーで定期実行）
@@ -35,10 +47,15 @@ const CHILD_SCRIPTS = [
 
 function processInputFolder() {
   const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-
+  const rppUnyouFiles = [];
   const files = inputFolder.getFiles();
   while (files.hasNext()) {
     const file = files.next();
+    if (isRppUnyouManagedFile_(file.getName())) {
+      rppUnyouFiles.push(file);
+      continue;
+    }
+
     const fileName = file.getName();
     let result;
 
@@ -56,6 +73,8 @@ function processInputFolder() {
 
     logResult_(fileName, result);
   }
+
+  processRppUnyouFilePairs_(rppUnyouFiles);
 }
 
 
@@ -89,66 +108,12 @@ function dispatchToChild_(file) {
     };
   }
 
-  let response;
-  try {
-    response = UrlFetchApp.fetch(
-      child.webAppUrl,
-      {
-        method: 'post',
-        contentType: 'application/json',
-        payload: JSON.stringify({ fileId: file.getId() }),
-        muteHttpExceptions: true,
-      }
-    );
-  } catch (error) {
-    return {
-      status: 'error',
-      message:
-        `子GAS呼び出し例外 child=${child.desc} url=${child.webAppUrl} ` +
-        `fileName=${fileName} fileId=${file.getId()} error=${error.message}`,
-      rowsImported: 0,
-    };
-  }
-
-  const statusCode = response.getResponseCode();
-  const responseText = response.getContentText();
-  let json;
-
-  try {
-    json = JSON.parse(responseText);
-  } catch (e) {
-    const preview = responseText.slice(0, 300);
-    Logger.log(`子GASレスポンス内容: ${preview}`);
-    return {
-      status: 'error',
-      message:
-        `子GASレスポンス解析失敗 child=${child.desc} url=${child.webAppUrl} ` +
-        `HTTP ${statusCode} / ${preview}`,
-      rowsImported: 0,
-    };
-  }
-
-  if (statusCode >= 400) {
-    return {
-      status: 'error',
-      message:
-        `子GASHTTPエラー child=${child.desc} url=${child.webAppUrl} ` +
-        `HTTP ${statusCode} / ${json.message || responseText}`,
-      rowsImported: json.rowsImported ?? 0,
-    };
-  }
-
-  if (json && json.status === 'error') {
-    return {
-      status: 'error',
-      message:
-        `子GASエラー child=${child.desc} url=${child.webAppUrl} ` +
-        `HTTP ${statusCode} / ${json.message || responseText}`,
-      rowsImported: json.rowsImported ?? 0,
-    };
-  }
-
-  return json;
+  return postToChildWebApp_(
+    child.webAppUrl,
+    { fileId: file.getId() },
+    child.desc,
+    `fileName=${fileName} fileId=${file.getId()}`
+  );
 }
 
 function matchChildScript_(child, fileName) {
@@ -175,6 +140,221 @@ function isCsvFile_(fileName, mimeType) {
 function isZipFile_(fileName, mimeType) {
   const normalizedFileName = String(fileName || '').toLowerCase();
   return normalizedFileName.endsWith('.zip') || mimeType === 'application/zip';
+}
+
+function isRppUnyouManagedFile_(fileName) {
+  return Boolean(parseRppUnyouFileMeta_(fileName));
+}
+
+function parseRppUnyouFileMeta_(fileName) {
+  const normalizedFileName = String(fileName || '');
+  const cpcMatch = normalizedFileName.match(RPP_UNYOU_FILE_PATTERNS.cpc);
+  if (cpcMatch) {
+    return { type: 'cpc', pairKey: cpcMatch[1] };
+  }
+
+  const rankMatch = normalizedFileName.match(RPP_UNYOU_FILE_PATTERNS.rank);
+  if (rankMatch) {
+    return { type: 'rank', pairKey: rankMatch[1] };
+  }
+
+  return null;
+}
+
+function processRppUnyouFilePairs_(files) {
+  if (!files || files.length === 0) {
+    return;
+  }
+
+  const pairMap = new Map();
+
+  files.forEach(file => {
+    const meta = parseRppUnyouFileMeta_(file.getName());
+    if (!meta) {
+      return;
+    }
+
+    const pair = pairMap.get(meta.pairKey) || {
+      pairKey: meta.pairKey,
+      cpcFiles: [],
+      rankFiles: [],
+    };
+
+    if (meta.type === 'cpc') {
+      pair.cpcFiles.push(file);
+    } else {
+      pair.rankFiles.push(file);
+    }
+
+    pairMap.set(meta.pairKey, pair);
+  });
+
+  pairMap.forEach(pair => processRppUnyouPair_(pair));
+}
+
+function processRppUnyouPair_(pair) {
+  if (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0) {
+    Logger.log(`RPP運用CSV待機中 pair=${pair.pairKey}`);
+    return;
+  }
+
+  if (pair.cpcFiles.length > 1 || pair.rankFiles.length > 1) {
+    const filesToMove = pair.cpcFiles.concat(pair.rankFiles);
+    const result = {
+      status: 'error',
+      message: `RPP運用CSVが重複しています pair=${pair.pairKey}`,
+      rowsImported: 0,
+    };
+
+    filesToMove.forEach(file => {
+      moveFile_(file, DRIVE_FOLDERS.error);
+      logResult_(file.getName(), result);
+    });
+    return;
+  }
+
+  const propertyKey = `${RPP_UNYOU_PAIR_PROPERTY_PREFIX}${pair.pairKey}`;
+  if (!startRppUnyouPairProcessing_(propertyKey)) {
+    Logger.log(`RPP運用CSV処理スキップ pair=${pair.pairKey}`);
+    return;
+  }
+
+  const cpcFile = pair.cpcFiles[0];
+  const rankFile = pair.rankFiles[0];
+  let result;
+
+  try {
+    result = dispatchRppUnyouPairToChild_(pair.pairKey, cpcFile, rankFile);
+  } catch (error) {
+    result = { status: 'error', message: error.message, rowsImported: 0 };
+  }
+
+  const destinationFolderId = result.status === 'success'
+    ? DRIVE_FOLDERS.processed
+    : DRIVE_FOLDERS.error;
+
+  try {
+    moveFile_(cpcFile, destinationFolderId);
+    moveFile_(rankFile, destinationFolderId);
+  } finally {
+    finishRppUnyouPairProcessing_(propertyKey);
+  }
+
+  logResult_(cpcFile.getName(), result);
+  logResult_(rankFile.getName(), result);
+}
+
+function dispatchRppUnyouPairToChild_(pairKey, cpcFile, rankFile) {
+  if (!RPP_UNYOU_CHILD.webAppUrl) {
+    return {
+      status: 'error',
+      message: `ウェブアプリURLが未設定: pair=${pairKey}`,
+      rowsImported: 0,
+    };
+  }
+
+  return postToChildWebApp_(
+    RPP_UNYOU_CHILD.webAppUrl,
+    {
+      cpcFileId: cpcFile.getId(),
+      rankFileId: rankFile.getId(),
+    },
+    RPP_UNYOU_CHILD.desc,
+    `pair=${pairKey} cpcFile=${cpcFile.getName()} rankFile=${rankFile.getName()}`
+  );
+}
+
+function startRppUnyouPairProcessing_(propertyKey) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    return false;
+  }
+
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    if (properties.getProperty(propertyKey)) {
+      return false;
+    }
+
+    properties.setProperty(propertyKey, String(new Date().getTime()));
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function finishRppUnyouPairProcessing_(propertyKey) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(propertyKey);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function postToChildWebApp_(webAppUrl, payload, childDesc, contextLabel) {
+  let response;
+  try {
+    response = UrlFetchApp.fetch(
+      webAppUrl,
+      {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true,
+      }
+    );
+  } catch (error) {
+    return {
+      status: 'error',
+      message:
+        `子GAS呼び出し例外 child=${childDesc} url=${webAppUrl} ` +
+        `${contextLabel} error=${error.message}`,
+      rowsImported: 0,
+    };
+  }
+
+  const statusCode = response.getResponseCode();
+  const responseText = response.getContentText();
+  let json;
+
+  try {
+    json = JSON.parse(responseText);
+  } catch (error) {
+    const preview = responseText.slice(0, 300);
+    Logger.log(`子GASレスポンス内容: ${preview}`);
+    return {
+      status: 'error',
+      message:
+        `子GASレスポンス解析失敗 child=${childDesc} url=${webAppUrl} ` +
+        `HTTP ${statusCode} / ${preview}`,
+      rowsImported: 0,
+    };
+  }
+
+  if (statusCode >= 400) {
+    return {
+      status: 'error',
+      message:
+        `子GASHTTPエラー child=${childDesc} url=${webAppUrl} ` +
+        `HTTP ${statusCode} / ${json.message || responseText}`,
+      rowsImported: json.rowsImported ?? 0,
+    };
+  }
+
+  if (json && json.status === 'error') {
+    return {
+      status: 'error',
+      message:
+        `子GASエラー child=${childDesc} url=${webAppUrl} ` +
+        `HTTP ${statusCode} / ${json.message || responseText}`,
+      rowsImported: json.rowsImported ?? 0,
+    };
+  }
+
+  return json;
 }
 
 
