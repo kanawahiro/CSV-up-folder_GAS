@@ -19,6 +19,7 @@ const DRIVE_FOLDERS = {
 // ファイル名のプレフィックスで振り分け先を判定する
 const CHILD_SCRIPTS = [
   { prefix: 'act_', webAppUrl: 'https://script.google.com/macros/s/AKfycbwj9fQ2X_A9mZRwvlHUZD8vqlkvYzb2bPCzUwhsZv_vVxLYgjDbCnoqvvdTPDe4srXSvw/exec', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
+  { prefix: 'rpp_', webAppUrl: '', desc: 'RPPパフォーマンス取込 (RPP-Track)' }, // デプロイ後にURLをセット
 ];
 
 
@@ -28,26 +29,28 @@ const CHILD_SCRIPTS = [
 
 function processInputFolder() {
   const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-  const files = inputFolder.getFilesByType(MimeType.CSV);
 
-  while (files.hasNext()) {
-    const file = files.next();
-    const fileName = file.getName();
-    let result;
+  for (const mimeType of [MimeType.CSV, MimeType.ZIP]) {
+    const files = inputFolder.getFilesByType(mimeType);
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+      let result;
 
-    try {
-      result = dispatchToChild_(file);
-    } catch (e) {
-      result = { status: 'error', message: e.message, rowsImported: 0 };
+      try {
+        result = dispatchToChild_(file);
+      } catch (e) {
+        result = { status: 'error', message: e.message, rowsImported: 0 };
+      }
+
+      if (result.status === 'success') {
+        moveFile_(file, DRIVE_FOLDERS.processed);
+      } else {
+        moveFile_(file, DRIVE_FOLDERS.error);
+      }
+
+      logResult_(fileName, result);
     }
-
-    if (result.status === 'success') {
-      moveFile_(file, DRIVE_FOLDERS.processed);
-    } else {
-      moveFile_(file, DRIVE_FOLDERS.error);
-    }
-
-    logResult_(fileName, result);
   }
 }
 
