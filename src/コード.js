@@ -89,9 +89,11 @@ function dispatchToChild_(file) {
   try {
     json = JSON.parse(response.getContentText());
   } catch (e) {
+    const preview = response.getContentText().slice(0, 300);
+    Logger.log(`子GASレスポンス内容: ${preview}`);
     return {
       status: 'error',
-      message: `子GASレスポンスの解析に失敗: HTTP ${statusCode}`,
+      message: `子GASレスポンスの解析に失敗: HTTP ${statusCode} / ${preview}`,
       rowsImported: 0,
     };
   }
