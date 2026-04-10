@@ -29,7 +29,7 @@ const CHILD_SCRIPTS = [
 ];
 
 const RPP_UNYOU_CHILD = {
-  webAppUrl: 'https://script.google.com/macros/s/AKfycbzWLyIYL7l1gkcu7XwfoGHiW_YTOvkimmvFCatafggS5CEWMYSWNC5IpnaZSDrHP0Gw/exec',
+  webAppUrl: 'https://script.google.com/macros/s/AKfycbyyXLyOFWkfuCJYfFWXlBTBvdYNGh-18ftYR_70TkX5qnWWMpTiAJggBzD2dugo3tPH/exec',
   desc: 'RPP運用CSV取込 (RPP-unyou)',
 };
 
@@ -226,10 +226,10 @@ function processRppUnyouPair_(pair) {
   try {
     result = dispatchRppUnyouPairToChild_(pair.pairKey, cpcFile, rankFile);
   } catch (error) {
-    result = { status: 'error', message: error.message, rowsImported: 0 };
+    result = { status: 'error', message: error.message, rowsImported: 0, csvImportStatus: 'error' };
   }
 
-  const destinationFolderId = result.status === 'success'
+  const destinationFolderId = isRppUnyouCsvImportSuccessful_(result)
     ? DRIVE_FOLDERS.processed
     : DRIVE_FOLDERS.error;
 
@@ -253,7 +253,7 @@ function dispatchRppUnyouPairToChild_(pairKey, cpcFile, rankFile) {
     };
   }
 
-  return postToChildWebApp_(
+  const result = postToChildWebApp_(
     RPP_UNYOU_CHILD.webAppUrl,
     {
       cpcFileId: cpcFile.getId(),
@@ -262,6 +262,17 @@ function dispatchRppUnyouPairToChild_(pairKey, cpcFile, rankFile) {
     RPP_UNYOU_CHILD.desc,
     `pair=${pairKey} cpcFile=${cpcFile.getName()} rankFile=${rankFile.getName()}`
   );
+
+  if (result.csvImportStatus === 'success' && result.rppTrackStatus === 'error') {
+    result.message =
+      `CSV取込み成功 / RPPトラックデータ読込み失敗: ${result.rppTrackMessage || result.message}`;
+  }
+
+  return result;
+}
+
+function isRppUnyouCsvImportSuccessful_(result) {
+  return result && result.csvImportStatus === 'success';
 }
 
 function startRppUnyouPairProcessing_(propertyKey) {
