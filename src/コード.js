@@ -22,6 +22,11 @@ const DRIVE_FOLDERS = {
 const CHILD_SCRIPTS = [
   { prefix: 'act_', webAppUrl: 'https://script.google.com/macros/s/AKfycbwj9fQ2X_A9mZRwvlHUZD8vqlkvYzb2bPCzUwhsZv_vVxLYgjDbCnoqvvdTPDe4srXSvw/exec', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
   {
+    patterns: [/.*ピッキング.*\.csv$/i],
+    webAppUrl: 'https://script.google.com/macros/s/AKfycbx-g5YT4kvVG1x4rd3jiDVLrtool1X0gGbaZejJ-VxMXuiTLCjL2_AsK066bzEKQaLK/exec',
+    desc: '会津在庫減算取込 (ピッキングCSV)',
+  },
+  {
     prefix: 'rpp_',
     patterns: [/^\d{8}_item_list\.csv$/i],
     webAppUrl: 'https://script.google.com/macros/s/AKfycbwUuMWwtkPsGDfE6gEHCu3Eno7ynoV0IQCZdUK1baEdo50RoL9-STegoBj6hqDMIuLP/exec',
