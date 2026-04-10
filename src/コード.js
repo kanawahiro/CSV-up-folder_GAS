@@ -89,27 +89,41 @@ function dispatchToChild_(file) {
     };
   }
 
-  const response = UrlFetchApp.fetch(
-    child.webAppUrl,
-    {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify({ fileId: file.getId() }),
-      muteHttpExceptions: true,
-    }
-  );
+  let response;
+  try {
+    response = UrlFetchApp.fetch(
+      child.webAppUrl,
+      {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify({ fileId: file.getId() }),
+        muteHttpExceptions: true,
+      }
+    );
+  } catch (error) {
+    return {
+      status: 'error',
+      message:
+        `子GAS呼び出し例外 child=${child.desc} url=${child.webAppUrl} ` +
+        `fileName=${fileName} fileId=${file.getId()} error=${error.message}`,
+      rowsImported: 0,
+    };
+  }
 
   const statusCode = response.getResponseCode();
+  const responseText = response.getContentText();
   let json;
 
   try {
-    json = JSON.parse(response.getContentText());
+    json = JSON.parse(responseText);
   } catch (e) {
-    const preview = response.getContentText().slice(0, 300);
+    const preview = responseText.slice(0, 300);
     Logger.log(`子GASレスポンス内容: ${preview}`);
     return {
       status: 'error',
-      message: `子GASレスポンスの解析に失敗: HTTP ${statusCode} / ${preview}`,
+      message:
+        `子GASレスポンス解析失敗 child=${child.desc} url=${child.webAppUrl} ` +
+        `HTTP ${statusCode} / ${preview}`,
       rowsImported: 0,
     };
   }
@@ -117,7 +131,19 @@ function dispatchToChild_(file) {
   if (statusCode >= 400) {
     return {
       status: 'error',
-      message: json.message || `子GAS呼び出し失敗: HTTP ${statusCode}`,
+      message:
+        `子GASHTTPエラー child=${child.desc} url=${child.webAppUrl} ` +
+        `HTTP ${statusCode} / ${json.message || responseText}`,
+      rowsImported: json.rowsImported ?? 0,
+    };
+  }
+
+  if (json && json.status === 'error') {
+    return {
+      status: 'error',
+      message:
+        `子GASエラー child=${child.desc} url=${child.webAppUrl} ` +
+        `HTTP ${statusCode} / ${json.message || responseText}`,
       rowsImported: json.rowsImported ?? 0,
     };
   }
