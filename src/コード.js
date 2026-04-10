@@ -1,6 +1,7 @@
 // ============================================================
-// CSV-up-folder 親GAS
-// Driveフォルダを監視し、CSVを子GASへ振り分けて取り込む
+// GAS名: アップ用親フォルダGAS
+// GAS URL: https://script.google.com/u/0/home/projects/1pObElCJbDz9GIUZZmZjTZhEPa2DLqai9nstUcNONY47i5624CQ16xOow/edit
+// 役割: Driveフォルダを監視し、CSVをファイル名プレフィックスで子GASへ振り分けて取り込む
 // ============================================================
 
 // ---- スプレッドシート ----
