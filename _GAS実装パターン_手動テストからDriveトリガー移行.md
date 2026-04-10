@@ -7,6 +7,22 @@
 
 ---
 
+## 新しいCSV種別を追加するときは（クイックリファレンス）
+
+1. **子GASに `doPost` + `importFromFileId` を実装してウェブアプリとしてデプロイ**
+2. **親GAS（`CSV-up-folder_GAS/src/コード.js`）の `CHILD_SCRIPTS` に1行追加するだけ**
+
+```javascript
+const CHILD_SCRIPTS = [
+  { prefix: 'act_', webAppUrl: '...', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
+  { prefix: '新プレフィックス_', webAppUrl: 'デプロイURL', desc: '追加する子GASの説明' }, // ← ここに追加
+];
+```
+
+詳細な手順は下記の各フェーズを参照。
+
+---
+
 ## フェーズ構成
 
 ```
