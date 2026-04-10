@@ -46,6 +46,20 @@ const RPP_UNYOU_FILE_PATTERNS = {
 
 const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
 
+const RPP_TRACK_ORDERED_FILE_PATTERNS = {
+  itemList: /^(\d{8})_item_list\.csv$/i,
+  itemReports: /^rpp_item_reports_limelimedou_(\d{8})\d+\.csv$/i,
+  keywordReports: /^rpp_keyword_reports_limelimedou_(\d{8})\d+\.csv$/i,
+};
+
+const RPP_TRACK_ORDERED_TYPE_ORDER = {
+  itemList: 1,
+  itemReports: 2,
+  keywordReports: 3,
+};
+
+const ORDERED_UPLOAD_SKIPPED_MESSAGE = '前段エラーのため未処理でerror移動';
+
 
 // ============================================================
 // メイン処理（タイマートリガーで定期実行）
@@ -53,54 +67,246 @@ const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
 
 function processInputFolder() {
   const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-  const rppUnyouFiles = [];
-  const files = inputFolder.getFiles();
-  while (files.hasNext()) {
-    const file = files.next();
+  const files = collectInputFiles_(inputFolder);
+  const clickpostFiles = [];
+  const orderedUploadFiles = [];
+  const regularFiles = [];
+
+  files.forEach(file => {
     const fileName = file.getName();
 
     if (isClickpostReportFile_(fileName)) {
-      let clickpostResult;
-
-      try {
-        clickpostResult = processClickpostReportFile_(file);
-      } catch (e) {
-        clickpostResult = { status: 'error', message: e.message, rowsImported: 0 };
-      }
-
-      if (clickpostResult.status === 'success') {
-        moveFile_(file, DRIVE_FOLDERS.processed);
-      } else {
-        moveFile_(file, DRIVE_FOLDERS.error);
-      }
-
-      logResult_(fileName, clickpostResult);
-      continue;
+      clickpostFiles.push(file);
+      return;
     }
 
-    if (isRppUnyouManagedFile_(file.getName())) {
-      rppUnyouFiles.push(file);
-      continue;
+    if (isOrderedUploadTargetFile_(fileName)) {
+      orderedUploadFiles.push(file);
+      return;
     }
 
-    let result;
+    regularFiles.push(file);
+  });
 
-    try {
-      result = dispatchToChild_(file);
-    } catch (e) {
-      result = { status: 'error', message: e.message, rowsImported: 0 };
-    }
+  clickpostFiles.forEach(file => processClickpostReportInputFile_(file));
 
-    if (result.status === 'success') {
-      moveFile_(file, DRIVE_FOLDERS.processed);
-    } else {
-      moveFile_(file, DRIVE_FOLDERS.error);
-    }
-
-    logResult_(fileName, result);
+  if (!processOrderedUploadFiles_(orderedUploadFiles)) {
+    return;
   }
 
-  processRppUnyouFilePairs_(rppUnyouFiles);
+  regularFiles.forEach(file => processRegularInputFile_(file));
+}
+
+function collectInputFiles_(inputFolder) {
+  const files = [];
+  const iterator = inputFolder.getFiles();
+
+  while (iterator.hasNext()) {
+    files.push(iterator.next());
+  }
+
+  return files;
+}
+
+function processClickpostReportInputFile_(file) {
+  const fileName = file.getName();
+  let result;
+
+  try {
+    result = processClickpostReportFile_(file);
+  } catch (e) {
+    result = { status: 'error', message: e.message, rowsImported: 0 };
+  }
+
+  if (result.status === 'success') {
+    moveFile_(file, DRIVE_FOLDERS.processed);
+  } else {
+    moveFile_(file, DRIVE_FOLDERS.error);
+  }
+
+  logResult_(fileName, result);
+}
+
+function processRegularInputFile_(file) {
+  const result = dispatchInputFile_(file);
+  const destinationFolderId = result.status === 'success'
+    ? DRIVE_FOLDERS.processed
+    : DRIVE_FOLDERS.error;
+
+  moveFile_(file, destinationFolderId);
+  logResult_(file.getName(), result);
+}
+
+function processOrderedUploadFiles_(files) {
+  if (!files || files.length === 0) {
+    return true;
+  }
+
+  const handledFileIds = {};
+  const rppTrackFiles = files
+    .filter(file => isRppTrackOrderedFile_(file.getName()))
+    .sort(compareRppTrackOrderedFiles_);
+  const rakutenSearchFiles = files
+    .filter(file => isRakutenSearchFile_(file.getName()))
+    .sort(compareFilesByName_);
+  const rppUnyouFiles = files
+    .filter(file => isRppUnyouManagedFile_(file.getName()))
+    .sort(compareRppUnyouFiles_);
+
+  if (!processOrderedDispatchFiles_(rppTrackFiles, files, handledFileIds)) {
+    return false;
+  }
+
+  if (!processOrderedDispatchFiles_(rakutenSearchFiles, files, handledFileIds)) {
+    return false;
+  }
+
+  if (!processOrderedRppUnyouFiles_(rppUnyouFiles, files, handledFileIds)) {
+    return false;
+  }
+
+  return true;
+}
+
+function processOrderedDispatchFiles_(stageFiles, allOrderedFiles, handledFileIds) {
+  for (let i = 0; i < stageFiles.length; i++) {
+    const file = stageFiles[i];
+    const result = dispatchInputFile_(file);
+    const destinationFolderId = result.status === 'success'
+      ? DRIVE_FOLDERS.processed
+      : DRIVE_FOLDERS.error;
+
+    moveFile_(file, destinationFolderId);
+    logResult_(file.getName(), result);
+    markHandledFile_(handledFileIds, file);
+
+    if (result.status !== 'success') {
+      moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, result.message);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function processOrderedRppUnyouFiles_(files, allOrderedFiles, handledFileIds) {
+  if (!files || files.length === 0) {
+    return true;
+  }
+
+  const pairMap = buildRppUnyouPairMap_(files);
+  const pairKeys = Array.from(pairMap.keys()).sort();
+
+  for (let i = 0; i < pairKeys.length; i++) {
+    const pair = pairMap.get(pairKeys[i]);
+    const pairValidationError = validateRppUnyouPair_(pair);
+
+    if (pairValidationError) {
+      const errorFiles = pair.cpcFiles.concat(pair.rankFiles);
+      const result = {
+        status: 'error',
+        message: pairValidationError,
+        rowsImported: 0,
+      };
+
+      errorFiles.forEach(file => {
+        moveFile_(file, DRIVE_FOLDERS.error);
+        logResult_(file.getName(), result);
+        markHandledFile_(handledFileIds, file);
+      });
+      moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, result.message);
+      return false;
+    }
+
+    if (!processOrderedRppUnyouPair_(pair, handledFileIds)) {
+      const message = `RPP運用CSV処理失敗 pair=${pair.pairKey}`;
+      moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, message);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function processOrderedRppUnyouPair_(pair, handledFileIds) {
+  const propertyKey = `${RPP_UNYOU_PAIR_PROPERTY_PREFIX}${pair.pairKey}`;
+  const cpcFile = pair.cpcFiles[0];
+  const rankFile = pair.rankFiles[0];
+
+  if (!startRppUnyouPairProcessing_(propertyKey)) {
+    const result = {
+      status: 'error',
+      message: `RPP運用CSV処理スキップ pair=${pair.pairKey}`,
+      rowsImported: 0,
+      csvImportStatus: 'error',
+    };
+    [cpcFile, rankFile].forEach(file => {
+      moveFile_(file, DRIVE_FOLDERS.error);
+      logResult_(file.getName(), result);
+      markHandledFile_(handledFileIds, file);
+    });
+    return false;
+  }
+
+  let result;
+
+  try {
+    result = dispatchRppUnyouPairToChild_(pair.pairKey, cpcFile, rankFile);
+  } catch (error) {
+    result = { status: 'error', message: error.message, rowsImported: 0, csvImportStatus: 'error' };
+  }
+
+  const destinationFolderId = isRppUnyouCsvImportSuccessful_(result)
+    ? DRIVE_FOLDERS.processed
+    : DRIVE_FOLDERS.error;
+
+  try {
+    moveFile_(cpcFile, destinationFolderId);
+    moveFile_(rankFile, destinationFolderId);
+  } finally {
+    finishRppUnyouPairProcessing_(propertyKey);
+  }
+
+  logResult_(cpcFile.getName(), result);
+  logResult_(rankFile.getName(), result);
+  markHandledFile_(handledFileIds, cpcFile);
+  markHandledFile_(handledFileIds, rankFile);
+
+  return isRppUnyouCsvImportSuccessful_(result);
+}
+
+function dispatchInputFile_(file) {
+  try {
+    return dispatchToChild_(file);
+  } catch (e) {
+    return { status: 'error', message: e.message, rowsImported: 0 };
+  }
+}
+
+function moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, reason) {
+  const result = {
+    status: 'error',
+    message: `${ORDERED_UPLOAD_SKIPPED_MESSAGE}: ${reason || ''}`.trim(),
+    rowsImported: 0,
+  };
+
+  allOrderedFiles.forEach(file => {
+    if (isHandledFile_(handledFileIds, file)) {
+      return;
+    }
+
+    moveFile_(file, DRIVE_FOLDERS.error);
+    logResult_(file.getName(), result);
+    markHandledFile_(handledFileIds, file);
+  });
+}
+
+function markHandledFile_(handledFileIds, file) {
+  handledFileIds[file.getId()] = true;
+}
+
+function isHandledFile_(handledFileIds, file) {
+  return handledFileIds[file.getId()] === true;
 }
 
 
@@ -168,6 +374,75 @@ function isZipFile_(fileName, mimeType) {
   return normalizedFileName.endsWith('.zip') || mimeType === 'application/zip';
 }
 
+function isOrderedUploadTargetFile_(fileName) {
+  return isRppTrackOrderedFile_(fileName)
+    || isRakutenSearchFile_(fileName)
+    || isRppUnyouManagedFile_(fileName);
+}
+
+function isRppTrackOrderedFile_(fileName) {
+  return Boolean(parseRppTrackOrderedFileMeta_(fileName));
+}
+
+function parseRppTrackOrderedFileMeta_(fileName) {
+  const normalizedFileName = String(fileName || '');
+  const itemListMatch = normalizedFileName.match(RPP_TRACK_ORDERED_FILE_PATTERNS.itemList);
+  if (itemListMatch) {
+    return { type: 'itemList', typeOrder: RPP_TRACK_ORDERED_TYPE_ORDER.itemList, dateKey: itemListMatch[1] };
+  }
+
+  const itemReportsMatch = normalizedFileName.match(RPP_TRACK_ORDERED_FILE_PATTERNS.itemReports);
+  if (itemReportsMatch) {
+    return { type: 'itemReports', typeOrder: RPP_TRACK_ORDERED_TYPE_ORDER.itemReports, dateKey: itemReportsMatch[1] };
+  }
+
+  const keywordReportsMatch = normalizedFileName.match(RPP_TRACK_ORDERED_FILE_PATTERNS.keywordReports);
+  if (keywordReportsMatch) {
+    return { type: 'keywordReports', typeOrder: RPP_TRACK_ORDERED_TYPE_ORDER.keywordReports, dateKey: keywordReportsMatch[1] };
+  }
+
+  return null;
+}
+
+function isRakutenSearchFile_(fileName) {
+  return String(fileName || '').startsWith('act_');
+}
+
+function compareRppTrackOrderedFiles_(a, b) {
+  const aMeta = parseRppTrackOrderedFileMeta_(a.getName());
+  const bMeta = parseRppTrackOrderedFileMeta_(b.getName());
+  const typeOrderDiff = aMeta.typeOrder - bMeta.typeOrder;
+  if (typeOrderDiff !== 0) {
+    return typeOrderDiff;
+  }
+
+  const dateDiff = aMeta.dateKey.localeCompare(bMeta.dateKey);
+  if (dateDiff !== 0) {
+    return dateDiff;
+  }
+
+  return compareFilesByName_(a, b);
+}
+
+function compareRppUnyouFiles_(a, b) {
+  const aMeta = parseRppUnyouFileMeta_(a.getName());
+  const bMeta = parseRppUnyouFileMeta_(b.getName());
+  const pairKeyDiff = aMeta.pairKey.localeCompare(bMeta.pairKey);
+  if (pairKeyDiff !== 0) {
+    return pairKeyDiff;
+  }
+
+  if (aMeta.type !== bMeta.type) {
+    return aMeta.type === 'cpc' ? -1 : 1;
+  }
+
+  return compareFilesByName_(a, b);
+}
+
+function compareFilesByName_(a, b) {
+  return a.getName().localeCompare(b.getName());
+}
+
 function isRppUnyouManagedFile_(fileName) {
   return Boolean(parseRppUnyouFileMeta_(fileName));
 }
@@ -192,6 +467,11 @@ function processRppUnyouFilePairs_(files) {
     return;
   }
 
+  const pairMap = buildRppUnyouPairMap_(files);
+  pairMap.forEach(pair => processRppUnyouPair_(pair));
+}
+
+function buildRppUnyouPairMap_(files) {
   const pairMap = new Map();
 
   files.forEach(file => {
@@ -215,20 +495,33 @@ function processRppUnyouFilePairs_(files) {
     pairMap.set(meta.pairKey, pair);
   });
 
-  pairMap.forEach(pair => processRppUnyouPair_(pair));
+  return pairMap;
+}
+
+function validateRppUnyouPair_(pair) {
+  if (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0) {
+    return `RPP運用CSVのペアが不足しています pair=${pair.pairKey}`;
+  }
+
+  if (pair.cpcFiles.length > 1 || pair.rankFiles.length > 1) {
+    return `RPP運用CSVが重複しています pair=${pair.pairKey}`;
+  }
+
+  return '';
 }
 
 function processRppUnyouPair_(pair) {
-  if (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0) {
+  const pairValidationError = validateRppUnyouPair_(pair);
+  if (pairValidationError && (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0)) {
     Logger.log(`RPP運用CSV待機中 pair=${pair.pairKey}`);
     return;
   }
 
-  if (pair.cpcFiles.length > 1 || pair.rankFiles.length > 1) {
+  if (pairValidationError) {
     const filesToMove = pair.cpcFiles.concat(pair.rankFiles);
     const result = {
       status: 'error',
-      message: `RPP運用CSVが重複しています pair=${pair.pairKey}`,
+      message: pairValidationError,
       rowsImported: 0,
     };
 
