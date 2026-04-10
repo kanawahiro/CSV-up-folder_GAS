@@ -23,7 +23,7 @@ const CHILD_SCRIPTS = [
   {
     prefix: 'rpp_',
     patterns: [/^\d{8}_item_list\.csv$/i],
-    webAppUrl: 'https://script.google.com/macros/s/AKfycbzCU1tvrd3vn-7NRY_b_RwBiWzecRVA0f3TAHwT3MA4hCbE03w9abDa-lqW4HIw3AiC/exec',
+    webAppUrl: 'https://script.google.com/macros/s/AKfycbxiYBfNGtAdbTYEh05V4Z61lWq_F7k2Tqjhny3Ybsju7WHE89fyalElQ8ogx-rFKgy7/exec',
     desc: 'RPPパフォーマンス取込 (RPP-Track bridge)',
   },
 ];
