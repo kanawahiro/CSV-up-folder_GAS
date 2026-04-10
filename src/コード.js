@@ -5,20 +5,20 @@
 // ============================================================
 
 // ---- スプレッドシート ----
-const LOG_SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID'; // ログ管理スプレッドシートのID
+const LOG_SPREADSHEET_ID = '1aYDQl95GRViM1OJOV-5e2NlB-H_6jseXTAHL2PYoAHk'; // ログ管理スプレッドシートのID
 const LOG_SHEET_NAME = 'log';
 
 // ---- Driveフォルダ ----
 const DRIVE_FOLDERS = {
-  input:     'YOUR_INPUT_FOLDER_ID',     // CSVを置くフォルダ
-  processed: 'YOUR_PROCESSED_FOLDER_ID', // 処理成功後の移動先
-  error:     'YOUR_ERROR_FOLDER_ID',     // 処理失敗後の移動先
+  input:     '1hqQhtQ3CKsu07wsrutiTeQUkw3xFmgV5', // CSVを置くフォルダ
+  processed: '1i9cqp-ZxLnhTnecyru484-CiOix05hZ2', // 処理成功後の移動先
+  error:     '1IRO975sSTLINYdWRfoQpvzkdyq9JguCo', // 処理失敗後の移動先
 };
 
-// ---- 子GAS スクリプトID ----
+// ---- 子GAS ウェブアプリURL ----
 // ファイル名のプレフィックスで振り分け先を判定する
 const CHILD_SCRIPTS = [
-  // { prefix: 'act_', scriptId: '子GASのスクリプトID', funcName: 'importFromFileId' },
+  { prefix: 'act_', webAppUrl: '', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
 ];
 
 
@@ -61,11 +61,19 @@ function dispatchToChild_(file) {
   const child = CHILD_SCRIPTS.find(c => fileName.startsWith(c.prefix));
 
   if (!child) {
-    return { status: 'error', message: '対応する子GASが見つかりません: ' + fileName, rowsImported: 0 };
+    return { status: 'error', message: '振り分けルールが未設定: ' + fileName, rowsImported: 0 };
+  }
+
+  if (!child.webAppUrl) {
+    return {
+      status: 'error',
+      message: `ウェブアプリURLが未設定: ${child.prefix}`,
+      rowsImported: 0,
+    };
   }
 
   const response = UrlFetchApp.fetch(
-    `https://script.google.com/macros/s/${child.scriptId}/exec`,
+    child.webAppUrl,
     {
       method: 'post',
       contentType: 'application/json',
@@ -74,7 +82,27 @@ function dispatchToChild_(file) {
     }
   );
 
-  const json = JSON.parse(response.getContentText());
+  const statusCode = response.getResponseCode();
+  let json;
+
+  try {
+    json = JSON.parse(response.getContentText());
+  } catch (e) {
+    return {
+      status: 'error',
+      message: `子GASレスポンスの解析に失敗: HTTP ${statusCode}`,
+      rowsImported: 0,
+    };
+  }
+
+  if (statusCode >= 400) {
+    return {
+      status: 'error',
+      message: json.message || `子GAS呼び出し失敗: HTTP ${statusCode}`,
+      rowsImported: json.rowsImported ?? 0,
+    };
+  }
+
   return json;
 }
 
@@ -91,7 +119,14 @@ function moveFile_(file, destFolderId) {
 }
 
 function logResult_(fileName, result) {
-  const sheet = SpreadsheetApp.openById(LOG_SPREADSHEET_ID).getSheetByName(LOG_SHEET_NAME);
+  const spreadsheet = SpreadsheetApp.openById(LOG_SPREADSHEET_ID);
+  let sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
+
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(LOG_SHEET_NAME);
+    sheet.appendRow(['timestamp', 'fileName', 'status', 'rowsImported', 'message']);
+  }
+
   sheet.appendRow([
     new Date(),
     fileName,
@@ -107,14 +142,15 @@ function logResult_(fileName, result) {
 // ============================================================
 
 function setupTrigger() {
-  // 既存トリガーを全削除（重複防止）
-  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'processInputFolder')
+    .forEach(t => ScriptApp.deleteTrigger(t));
 
-  // 5分毎のポーリングトリガーを登録
+  // 1分毎のポーリングトリガーを登録
   ScriptApp.newTrigger('processInputFolder')
     .timeBased()
-    .everyMinutes(5)
+    .everyMinutes(1)
     .create();
 
-  Logger.log('トリガーを設定しました（5分毎）');
+  Logger.log('トリガーを設定しました（1分毎）');
 }

@@ -1,20 +1,21 @@
-# GAS実装パターン: 手動テストからDriveトリガーへの移行
+# GAS実装パターン: 手動テストから親子GAS構成への移行
 
 ## 概要
 
 新しいCSV取込GASを作成する際の標準的な実装フロー。
-スプレッドシートのメニューで手動テストし、動作確認後にGoogleドライブトリガーへ移行する。
+スプレッドシートのメニューで手動テストし、動作確認後に親GAS（アップ用親フォルダGAS）から呼び出される構成へ移行する。
 
 ---
 
 ## フェーズ構成
 
 ```
-フェーズ1: 手動テスト
+フェーズ1: 手動テスト（子GAS単体）
   └── スプレッドシートのカスタムメニュー → CSV手動取込 → 動作確認
 
-フェーズ2: 自動トリガー移行
-  └── Driveフォルダ監視トリガー → CSVをフォルダに置くだけで自動実行
+フェーズ2: 親子GAS構成への移行
+  └── 子GAS → doPost エンドポイントを追加してウェブアプリとして公開
+  └── 親GAS → CHILD_SCRIPTS に1行追加して振り分けルールを登録
 ```
 
 ---
@@ -24,7 +25,7 @@
 ### 目的
 
 - CSV取込ロジックが正しく動くかを、スプレッドシートのメニューから確認する
-- Driveフォルダ連携の前に取込仕様を完成させる
+- 親GAS連携の前に取込仕様を完成させる
 
 ### 実装すべき関数
 
@@ -54,7 +55,7 @@ function importFromUpload(base64Data, fileName) {
   return importCsv(csvText, { fileName });
 }
 
-// ④ 将来の親GAS連携用入口（フェーズ2でも共通利用）
+// ④ 親GAS連携用入口（フェーズ2でも共通利用）
 function importFromFileId(fileId) {
   const file = DriveApp.getFileById(fileId);
   const blob = file.getBlob();
@@ -88,148 +89,83 @@ function importCsv(csvText, sourceMeta) {
 
 ---
 
-## フェーズ2: Driveトリガーへの移行
+## フェーズ2: 親子GAS構成への移行
 
 ### 目的
 
-- フォルダにCSVを置くだけで自動取込が実行される仕組みに切り替える
+- 親GAS（アップ用親フォルダGAS）からHTTPで呼び出される構成に切り替える
 - フェーズ1で完成した取込ロジックはそのまま使う
+- フォルダ監視・ファイル移動・ログ記録はすべて親GASが担当する
 
 ---
 
-### 仕組みの説明
-
-GASには「ファイルが追加されたら即時実行する」ネイティブトリガーは存在しない。
-代わりに **時間主導型トリガー（ポーリング）** を使い、一定間隔で `input` フォルダを確認する方式をとる。
+### 全体構成
 
 ```
-[定期実行トリガー（例: 5分毎）]
-  ↓
-processInputFolder() が起動
-  ↓
-input フォルダを確認
-  ├── CSVあり → importFromFileId() で取込 → processed or error へ移動
-  └── CSVなし → 何もせず終了
-```
-
----
-
-### フォルダ構成
-
-```
-Google Drive
-└── CSV取込フォルダ/
-    ├── input/       ← ここにCSVを置くと次回のポーリングで処理される
-    ├── processed/   ← 処理成功したCSVを移動
-    └── error/       ← 処理失敗したCSVを移動
-```
-
-#### フォルダIDの確認方法
-
-Google DriveでフォルダをブラウザのURLバーで開くと、以下の形式でIDを確認できる。
-
-```
-https://drive.google.com/drive/folders/【ここがフォルダID】
+[01input フォルダ]
+  ↓ 1分おきにポーリング（親GAS）
+[アップ用親フォルダGAS]
+  ├── ファイル名プレフィックスで振り分け
+  │     ├── act_ → 楽天サーチ 記録用（ウェブアプリ）へ POST
+  │     └── （将来追加分） → 他の子GAS へ POST
+  ├── 成功 → 02processed へ移動
+  └── 失敗 → 03error へ移動・ログ記録
 ```
 
 ---
 
-### 追加する関数
+### 子GAS側に追加する実装
+
+フェーズ1のコードはそのまま残し、`doPost(e)` を1つ追加するだけ。
 
 ```javascript
-// フォルダIDは定数として管理する（URLから取得したIDを設定する）
-const DRIVE_FOLDERS = {
-  input:     'FOLDER_ID_INPUT',      // inputフォルダのID
-  processed: 'FOLDER_ID_PROCESSED',  // processedフォルダのID
-  error:     'FOLDER_ID_ERROR',      // errorフォルダのID
-};
-
-// ポーリングで定期実行されるメイン処理
-// ※ この関数にトリガーを設定する
-function processInputFolder() {
-  const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-  const files = inputFolder.getFilesByType(MimeType.CSV);
-
-  while (files.hasNext()) {
-    const file = files.next();
-    const result = importFromFileId(file.getId());  // フェーズ1と共通の入口
-
-    if (result.status === 'success') {
-      moveFile_(file, DRIVE_FOLDERS.processed);
-    } else {
-      moveFile_(file, DRIVE_FOLDERS.error);
-    }
-
-    logResult_(file.getName(), result);
+// 親GASからPOSTリクエストで呼ばれるエンドポイント
+// リクエストボディ: { "fileId": "DriveファイルID" }
+function doPost(e) {
+  try {
+    const params = JSON.parse(e.postData.contents);
+    const result = importFromFileId(params.fileId);
+    return ContentService.createTextOutput(JSON.stringify(result))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: 'error',
+      message: error.message,
+      rowsImported: 0,
+    })).setMimeType(ContentService.MimeType.JSON);
   }
 }
-
-// ファイルをフォルダ間で移動するユーティリティ
-function moveFile_(file, destFolderId) {
-  const dest = DriveApp.getFolderById(destFolderId);
-  const src  = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-  dest.addFile(file);
-  src.removeFile(file);
-}
-
-// 実行ログをシートに記録する
-function logResult_(fileName, result) {
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName('log');
-  sheet.appendRow([
-    new Date(),
-    fileName,
-    result.status,
-    result.rowsImported ?? 0,
-    result.message,
-  ]);
-}
 ```
+
+### 子GASのウェブアプリとしてのデプロイ手順
+
+1. GASエディタ → デプロイ → 新しいデプロイ
+2. 種類: **ウェブアプリ**
+3. 実行者: **自分**
+4. アクセス: **全員（URLを知っている人）**
+5. デプロイ → URLをコピー（`https://script.google.com/macros/s/AKfycbx.../exec`）
+
+> コードを変更した場合は「デプロイを管理」→「新しいバージョンを作成」が必要。
 
 ---
 
-### トリガーの設定手順
+### 親GAS（アップ用親フォルダGAS）の設定
 
-**GASエディタからの手動設定手順:**
-
-1. GASエディタ左メニューの「トリガー（時計マーク）」を開く
-2. 右下の「トリガーを追加」をクリック
-3. 以下の通り設定して保存する
-
-| 設定項目 | 値 |
-|--------|---|
-| 実行する関数 | `processInputFolder` |
-| 実行するデプロイ | Head |
-| イベントのソース | 時間主導型 |
-| 時間ベースのトリガーのタイプ | 分ベースのタイマー |
-| 時間の間隔（分） | 5分毎（または10分毎） |
-
-4. 初回実行時にGoogleアカウントの権限承認が求められる → 「許可」をクリック
-
-**コードからトリガーを登録する方法（任意）:**
+子GASを追加するときは `CHILD_SCRIPTS` に1行追加するだけ。
 
 ```javascript
-// 一度だけ手動実行してトリガーを登録するセットアップ関数
-function setupTrigger() {
-  // 既存のトリガーを削除（重複防止）
-  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
-
-  // 5分毎のポーリングトリガーを登録
-  ScriptApp.newTrigger('processInputFolder')
-    .timeBased()
-    .everyMinutes(5)
-    .create();
-
-  Logger.log('トリガーを設定しました');
-}
+// ここを見れば何がどのGASに振り分けられるかわかる
+const CHILD_SCRIPTS = [
+  { prefix: 'act_', webAppUrl: '子GASのデプロイURL', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
+  // { prefix: '新プレフィックス_', webAppUrl: '...', desc: '説明' },  ← 追加はここに1行
+];
 ```
-
-> `setupTrigger()` はエディタから一度だけ手動実行する。以後は自動でポーリングが動く。
 
 ---
 
-### logシートの列構成
+### ログシートの列構成
 
-スプレッドシートに `log` という名前のシートを作成し、1行目にヘッダーを手動で入力する。
+親GASのログシート（`log`）に以下の形式で記録される。
 
 | 列 | 内容 | 例 |
 |----|------|---|
@@ -237,27 +173,15 @@ function setupTrigger() {
 | B | ファイル名 | act_20260401_427986.csv |
 | C | status | success / error |
 | D | 取込件数 | 10 |
-| E | メッセージ | 取込完了: 10件 |
+| E | メッセージ | 10件登録しました。 |
 
----
-
-## 移行チェックリスト
-
-フェーズ1の動作確認が取れたら、以下を順番に実施する。
-
-- [ ] Google Driveに `input` / `processed` / `error` フォルダを作成する
-- [ ] 各フォルダのIDをコードの `DRIVE_FOLDERS` に設定する
-- [ ] スプレッドシートに `log` シートを追加し、ヘッダー行を記入する
-- [ ] `processInputFolder` 関数を追加する
-- [ ] `moveFile_` / `logResult_` ユーティリティを追加する
-- [ ] 時間トリガーを設定する（5〜15分毎）
-- [ ] `input` フォルダに実際のCSVを置いて動作確認する
+> `log` シートは初回実行時に自動作成される。手動での事前作成は不要。
 
 ---
 
 ## 戻り値の標準形
 
-子GASの取込結果は、親GASや `logResult_` が共通で扱えるよう以下の形を守る。
+子GASの取込結果は、親GASが共通で扱えるよう以下の形を守る。
 
 ```javascript
 {
@@ -274,13 +198,33 @@ function setupTrigger() {
 
 ---
 
+## 移行チェックリスト
+
+フェーズ1の動作確認が取れたら、以下を順番に実施する。
+
+- [ ] 子GASに `doPost(e)` を追加する
+- [ ] 子GASをウェブアプリとしてデプロイしてURLを取得する
+- [ ] 親GASの `CHILD_SCRIPTS` にプレフィックスとURLを登録する
+- [ ] 親GASをclasp pushして反映する
+- [ ] 親GASエディタで `setupTrigger()` を手動実行する（1分ごとのトリガーが登録される）
+- [ ] 子GASに旧トリガーが残っていれば削除する
+- [ ] `01input` に実際のCSVを置いて動作確認する
+
+---
+
 ## ファイル構成テンプレート
 
 ```
-src/
-├── コード.js     ← メイン処理（取込ロジック + Driveトリガー処理）
-├── upload.html  ← フェーズ1のブラウザアップロードUI
-└── appsscript.json
+子GAS/
+├── src/
+│   ├── コード.js     ← 取込ロジック + doPost エンドポイント
+│   ├── upload.html  ← フェーズ1のブラウザアップロードUI
+│   └── appsscript.json
+
+親GAS（CSV-up-folder_GAS）/
+├── src/
+│   ├── コード.js     ← フォルダ監視・振り分け・ログ（CHILD_SCRIPTSを更新するだけ）
+│   └── appsscript.json
 ```
 
 ---
@@ -291,6 +235,41 @@ src/
 
 1. **取込ロジック本体**（`importCsv` 相当）を新たに作る
 2. **`importFromFileId(fileId)` の入口** を必ず用意する（親GASとの接続仕様）
-3. **ファイル名プレフィックス** を決めて親GASの判定に追加する
-4. **戻り値** が標準形になっていることを確認する
-5. フェーズ1でメニューテストが通ってからフェーズ2へ進む
+3. **`doPost(e)` を追加**してウェブアプリとしてデプロイする
+4. **ファイル名プレフィックス** を決めて親GASの `CHILD_SCRIPTS` に1行追加する
+5. **戻り値** が標準形になっていることを確認する
+6. フェーズ1でメニューテストが通ってからフェーズ2へ進む
+
+---
+
+## 実案件設定例: 楽天サーチGAS
+
+### GAS情報
+
+| GAS名 | 役割 | ローカルリポジトリ | GAS URL |
+|---|---|---|---|
+| アップ用親フォルダGAS | フォルダ監視・振り分け | `CSV-up-folder_GAS` | https://script.google.com/u/0/home/projects/1pObElCJbDz9GIUZZmZjTZhEPa2DLqai9nstUcNONY47i5624CQ16xOow/edit |
+| 楽天サーチ 記録用 | 楽天サーチCSV取込 | `利益・広告/raku_sa-chi_GAS` | https://script.google.com/home/projects/1beZAm8T7sp5LVwlQhGA4p9lLtdq3uZErKW6AHgW45Os3gCULEEnBOsKr/edit |
+
+### Driveフォルダ情報
+
+| 用途 | フォルダID |
+|------|------------|
+| input (01input) | `1hqQhtQ3CKsu07wsrutiTeQUkw3xFmgV5` |
+| processed (02processed) | `1i9cqp-ZxLnhTnecyru484-CiOix05hZ2` |
+| error (03error) | `1IRO975sSTLINYdWRfoQpvzkdyq9JguCo` |
+
+### ログシート情報
+
+| 種類 | スプレッドシートID | シート名 |
+|---|---|---|
+| 親GASルーティングログ | `1aYDQl95GRViM1OJOV-5e2NlB-H_6jseXTAHL2PYoAHk` | `log` |
+| 子GAS取込ログ | `1aYDQl95GRViM1OJOV-5e2NlB-H_6jseXTAHL2PYoAHk` | `取込ログ` |
+
+### 振り分けルール
+
+```javascript
+const CHILD_SCRIPTS = [
+  { prefix: 'act_', webAppUrl: '（デプロイ後に設定）', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
+];
+```
