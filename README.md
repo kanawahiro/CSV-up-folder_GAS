@@ -26,8 +26,8 @@ Google Apps Script で Google Drive の入力フォルダを定期監視し、�
 | 1 | RPPトラック | `YYYYMMDD_item_list.csv` | RPP-Track |
 | 1 | RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | RPP-Track |
 | 1 | RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | RPP-Track |
-| 2 | 楽天サーチ | `act_*.csv` / `act_*.zip` | 楽天サーチ 記録用 |
-| 3 | 広告表示 | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` と `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` のペア | RPP-unyou |
+| 2 | 広告表示 | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` と `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` のペア | RPP-unyou |
+| 3 | 楽天サーチ | `act_*.csv` / `act_*.zip` | 楽天サーチ 記録用 |
 
 RPPトラック内では、必ず以下の順に処理します。
 
@@ -55,9 +55,9 @@ RPPトラック内では、必ず以下の順に処理します。
 | RPPトラック | `YYYYMMDD_item_list.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
 | RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
 | RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
-| 楽天サーチ | `act_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
 | 広告表示 CPC | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` | rankファイルとペアで子GASへPOST | ペア処理成功時に `processed` | ペア処理失敗時に `error` |
 | 広告表示 rank | `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` | CPCファイルとペアで子GASへPOST | ペア処理成功時に `processed` | ペア処理失敗時に `error` |
+| 楽天サーチ | `act_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
 | 会津在庫減算取込 | ファイル名に `ピッキング` を含む `.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動 |
 | その他RPP | `rpp_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動 |
 | 未対応形式 | CSV/ZIP以外 | エラー扱い | なし | `error` へ移動 |

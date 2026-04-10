@@ -157,11 +157,11 @@ function processOrderedUploadFiles_(files) {
     return false;
   }
 
-  if (!processOrderedDispatchFiles_(rakutenSearchFiles, files, handledFileIds)) {
+  if (!processOrderedRppUnyouFiles_(rppUnyouFiles, files, handledFileIds)) {
     return false;
   }
 
-  if (!processOrderedRppUnyouFiles_(rppUnyouFiles, files, handledFileIds)) {
+  if (!processOrderedDispatchFiles_(rakutenSearchFiles, files, handledFileIds)) {
     return false;
   }
 
