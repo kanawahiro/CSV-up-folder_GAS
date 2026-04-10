@@ -18,7 +18,7 @@ const DRIVE_FOLDERS = {
 // ---- 子GAS ウェブアプリURL ----
 // ファイル名のプレフィックスで振り分け先を判定する
 const CHILD_SCRIPTS = [
-  { prefix: 'act_', webAppUrl: '', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
+  { prefix: 'act_', webAppUrl: 'https://script.google.com/macros/s/AKfycby9o4PJ0TkxrIh_G5hzhaljVg9CeUUNt1snE7KeSCXzS6tqDWNLYObm_4HHxo506INDNQ/exec', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
 ];
 
 
