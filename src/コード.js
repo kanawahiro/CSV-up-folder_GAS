@@ -19,7 +19,7 @@ const DRIVE_FOLDERS = {
 // ファイル名のプレフィックスで振り分け先を判定する
 const CHILD_SCRIPTS = [
   { prefix: 'act_', webAppUrl: 'https://script.google.com/macros/s/AKfycbwj9fQ2X_A9mZRwvlHUZD8vqlkvYzb2bPCzUwhsZv_vVxLYgjDbCnoqvvdTPDe4srXSvw/exec', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
-  { prefix: 'rpp_', webAppUrl: '', desc: 'RPPパフォーマンス取込 (RPP-Track)' }, // デプロイ後にURLをセット
+  { prefix: 'rpp_', webAppUrl: 'https://script.google.com/macros/s/AKfycbzZvxl5m7gTacon_dtM-c1VqktP6URaGqdmzYiEVsy7UvdUaEFi9uNY63_hqV3chv1Q/exec', desc: 'RPPパフォーマンス取込 (RPP-Track)' },
 ];
 
 
