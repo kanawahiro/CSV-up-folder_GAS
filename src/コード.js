@@ -30,27 +30,25 @@ const CHILD_SCRIPTS = [
 function processInputFolder() {
   const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
 
-  for (const mimeType of [MimeType.CSV, 'application/zip']) {
-    const files = inputFolder.getFilesByType(mimeType);
-    while (files.hasNext()) {
-      const file = files.next();
-      const fileName = file.getName();
-      let result;
+  const files = inputFolder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
+    const fileName = file.getName();
+    let result;
 
-      try {
-        result = dispatchToChild_(file);
-      } catch (e) {
-        result = { status: 'error', message: e.message, rowsImported: 0 };
-      }
-
-      if (result.status === 'success') {
-        moveFile_(file, DRIVE_FOLDERS.processed);
-      } else {
-        moveFile_(file, DRIVE_FOLDERS.error);
-      }
-
-      logResult_(fileName, result);
+    try {
+      result = dispatchToChild_(file);
+    } catch (e) {
+      result = { status: 'error', message: e.message, rowsImported: 0 };
     }
+
+    if (result.status === 'success') {
+      moveFile_(file, DRIVE_FOLDERS.processed);
+    } else {
+      moveFile_(file, DRIVE_FOLDERS.error);
+    }
+
+    logResult_(fileName, result);
   }
 }
 
