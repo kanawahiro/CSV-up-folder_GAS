@@ -7,6 +7,7 @@
 // ---- スプレッドシート ----
 const LOG_SPREADSHEET_ID = '1aYDQl95GRViM1OJOV-5e2NlB-H_6jseXTAHL2PYoAHk'; // ログ管理スプレッドシートのID
 const LOG_SHEET_NAME = 'log';
+const PARENT_LOG_SIGNATURE = 'PARENT_20260410_V1';
 
 // ---- Driveフォルダ ----
 const DRIVE_FOLDERS = {
@@ -176,8 +177,13 @@ function logResult_(fileName, result) {
     fileName,
     result.status,
     result.rowsImported ?? 0,
-    result.message ?? '',
+    formatParentLogMessage_(result.message),
   ]);
+}
+
+function formatParentLogMessage_(message) {
+  const normalizedMessage = message == null ? '' : String(message);
+  return `${PARENT_LOG_SIGNATURE} ${normalizedMessage}`.trim();
 }
 
 
