@@ -14,6 +14,7 @@ const DRIVE_FOLDERS = {
   input:     '1hqQhtQ3CKsu07wsrutiTeQUkw3xFmgV5', // CSVを置くフォルダ
   processed: '1i9cqp-ZxLnhTnecyru484-CiOix05hZ2', // 処理成功後の移動先
   error:     '1IRO975sSTLINYdWRfoQpvzkdyq9JguCo', // 処理失敗後の移動先
+  output:    '', // clickpostReport 加工後CSVの出力先（未設定時は入力フォルダと同階層の 04output を使用）
 };
 
 // ---- 子GAS ウェブアプリURL ----
@@ -51,12 +52,32 @@ function processInputFolder() {
   const files = inputFolder.getFiles();
   while (files.hasNext()) {
     const file = files.next();
+    const fileName = file.getName();
+
+    if (isClickpostReportFile_(fileName)) {
+      let clickpostResult;
+
+      try {
+        clickpostResult = processClickpostReportFile_(file);
+      } catch (e) {
+        clickpostResult = { status: 'error', message: e.message, rowsImported: 0 };
+      }
+
+      if (clickpostResult.status === 'success') {
+        moveFile_(file, DRIVE_FOLDERS.processed);
+      } else {
+        moveFile_(file, DRIVE_FOLDERS.error);
+      }
+
+      logResult_(fileName, clickpostResult);
+      continue;
+    }
+
     if (isRppUnyouManagedFile_(file.getName())) {
       rppUnyouFiles.push(file);
       continue;
     }
 
-    const fileName = file.getName();
     let result;
 
     try {
@@ -368,11 +389,6 @@ function postToChildWebApp_(webAppUrl, payload, childDesc, contextLabel) {
   return json;
 }
 
-
-// ============================================================
-// ユーティリティ
-// ============================================================
-
 function moveFile_(file, destFolderId) {
   const dest = DriveApp.getFolderById(destFolderId);
   const src  = DriveApp.getFolderById(DRIVE_FOLDERS.input);
@@ -380,22 +396,31 @@ function moveFile_(file, destFolderId) {
   src.removeFile(file);
 }
 
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+
 function logResult_(fileName, result) {
   const spreadsheet = SpreadsheetApp.openById(LOG_SPREADSHEET_ID);
   let sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
 
   if (!sheet) {
     sheet = spreadsheet.insertSheet(LOG_SHEET_NAME);
-    sheet.appendRow(['timestamp', 'fileName', 'status', 'rowsImported', 'message']);
   }
 
-  sheet.appendRow([
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, 5).setValues([['timestamp', 'fileName', 'status', 'rowsImported', 'message']]);
+  }
+
+  sheet.insertRowAfter(1);
+  sheet.getRange(2, 1, 1, 5).setValues([[
     new Date(),
     fileName,
     result.status,
     result.rowsImported ?? 0,
     formatParentLogMessage_(result.message),
-  ]);
+  ]]);
 }
 
 function formatParentLogMessage_(message) {
