@@ -26,8 +26,8 @@ Google Apps Script で Google Drive の入力フォルダを定期監視し、�
 | 1 | RPPトラック | `YYYYMMDD_item_list.csv` | RPP-Track |
 | 1 | RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | RPP-Track |
 | 1 | RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | RPP-Track |
-| 2 | 広告表示 | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` と `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` のペア | RPP-unyou |
-| 3 | 楽天サーチ | `act_*.csv` / `act_*.zip` | 楽天サーチ 記録用 |
+| 2 | 楽天サーチ | `act_*.csv` / `act_*.zip` | 楽天サーチ 記録用 |
+| 3 | 広告表示 | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` と `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` のペア | RPP-unyou |
 
 RPPトラック内では、必ず以下の順に処理します。
 
@@ -36,6 +36,8 @@ RPPトラック内では、必ず以下の順に処理します。
 3. `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv`
 
 前の処理が成功した場合だけ次へ進みます。
+
+広告表示ペアは順番制御対象の最後に処理します。RPPトラックと楽天サーチが成功した後、広告表示ペアの処理前に約3分待機します。待機中の広告表示ペアは `input` に残り、1分ごとの次回以降のトリガーで3分経過を確認してから処理されます。
 
 ## エラー時の動き
 
@@ -88,9 +90,17 @@ RPPトラック内では、必ず以下の順に処理します。
 - CPC: `rpp_item_keyword_limelimedou_YYYYMMDD*.csv`
 - rank: `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv`
 
+広告表示ペアは、順番制御対象内では最後に処理されます。処理直前に待機開始時刻を保存し、約3分経過後のトリガーで子GASへPOSTします。`Utilities.sleep` で実行を止める方式ではありません。
+
 ペア不足または同種ファイルの重複がある場合はエラー扱いです。対象ファイルを `error` へ移動し、順番制御対象の後続処理は止めます。
 
 戻り値の `csvImportStatus` が `success` なら成功扱いです。`rppTrackStatus` が `error` でも、CSV取込みが成功していれば2ファイルとも `processed` に移動します。
+
+## 重複防止
+
+1分トリガーの重なりを避けるため、`processInputFolder()` 全体でスクリプトロックを取得します。前回実行中に次のトリガーが起動した場合、後から起動した実行は処理せず終了します。
+
+また、ファイル処理中はfileId単位で `processing` を一時記録します。同じfileIdが処理中の場合、その回では二重に子GASへ送信しません。成功済みfileIdの長期記録は残しません。
 
 ## 通常の子GAS振り分け
 
