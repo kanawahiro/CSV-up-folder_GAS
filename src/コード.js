@@ -45,13 +45,11 @@ const RPP_UNYOU_FILE_PATTERNS = {
 };
 
 const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
-const RPP_UNYOU_DELAY_STATE_PROPERTY_KEY = 'RPP_UNYOU_DELAY_BEFORE_PROCESS_STATE';
-const RPP_UNYOU_DELAY_BEFORE_PROCESS_MS = 3 * 60 * 1000;
 
 const RPP_TRACK_ORDERED_FILE_PATTERNS = {
   itemList: /^(\d{8})_item_list\.csv$/i,
-  itemReports: /^rpp_item_reports_limelimedou_(\d{8})\d+\.zip$/i,
-  keywordReports: /^rpp_keyword_reports_limelimedou_(\d{8})\d+\.zip$/i,
+  itemReports: /^rpp_item_reports_limelimedou_(\d{8})\d+\.csv$/i,
+  keywordReports: /^rpp_keyword_reports_limelimedou_(\d{8})\d+\.csv$/i,
 };
 
 const RPP_TRACK_ORDERED_TYPE_ORDER = {
@@ -60,7 +58,6 @@ const RPP_TRACK_ORDERED_TYPE_ORDER = {
   keywordReports: 3,
 };
 
-const RPP_TRACK_REQUIRED_TYPES = ['itemList', 'itemReports', 'keywordReports'];
 const ORDERED_UPLOAD_SKIPPED_MESSAGE = '前段エラーのため未処理でerror移動';
 
 
@@ -121,7 +118,7 @@ function processClickpostReportInputFile_(file) {
     result = { status: 'error', message: e.message, rowsImported: 0 };
   }
 
-  if (isProcessedResult_(result)) {
+  if (result.status === 'success') {
     moveFile_(file, DRIVE_FOLDERS.processed);
   } else {
     moveFile_(file, DRIVE_FOLDERS.error);
@@ -132,7 +129,7 @@ function processClickpostReportInputFile_(file) {
 
 function processRegularInputFile_(file) {
   const result = dispatchInputFile_(file);
-  const destinationFolderId = isProcessedResult_(result)
+  const destinationFolderId = result.status === 'success'
     ? DRIVE_FOLDERS.processed
     : DRIVE_FOLDERS.error;
 
@@ -156,32 +153,11 @@ function processOrderedUploadFiles_(files) {
     .filter(file => isRppUnyouManagedFile_(file.getName()))
     .sort(compareRppUnyouFiles_);
 
-  clearRppUnyouDelayIfTargetMissing_(rppUnyouFiles);
-
-  if (shouldWaitForCompleteRppTrackSet_(rppTrackFiles)) {
-    Logger.log(`RPPトラック3種待機中 missing=${getMissingRppTrackTypes_(rppTrackFiles).join(',')}`);
-    return false;
-  }
-
   if (!processOrderedDispatchFiles_(rppTrackFiles, files, handledFileIds)) {
     return false;
   }
 
-  if (shouldStartRppUnyouDelay_(rppTrackFiles, rppUnyouFiles)) {
-    startRppUnyouDelay_(rppTrackFiles, rppUnyouFiles);
-    return false;
-  }
-
-  if (!isRppUnyouDelayReady_(rppUnyouFiles)) {
-    return false;
-  }
-
-  const rppUnyouResult = processOrderedRppUnyouFiles_(rppUnyouFiles, files, handledFileIds);
-  if (rppUnyouFiles.length > 0) {
-    clearRppUnyouDelayState_();
-  }
-
-  if (!rppUnyouResult) {
+  if (!processOrderedRppUnyouFiles_(rppUnyouFiles, files, handledFileIds)) {
     return false;
   }
 
@@ -192,119 +168,11 @@ function processOrderedUploadFiles_(files) {
   return true;
 }
 
-function shouldStartRppUnyouDelay_(rppTrackFiles, rppUnyouFiles) {
-  return hasCompleteRppTrackSet_(rppTrackFiles) && rppUnyouFiles.length > 0;
-}
-
-function shouldWaitForCompleteRppTrackSet_(rppTrackFiles) {
-  return rppTrackFiles.length > 0 && !hasCompleteRppTrackSet_(rppTrackFiles);
-}
-
-function hasCompleteRppTrackSet_(rppTrackFiles) {
-  const typeMap = {};
-
-  rppTrackFiles.forEach(file => {
-    const meta = parseRppTrackOrderedFileMeta_(file.getName());
-    if (meta) {
-      typeMap[meta.type] = true;
-    }
-  });
-
-  return RPP_TRACK_REQUIRED_TYPES.every(type => typeMap[type] === true);
-}
-
-function getMissingRppTrackTypes_(rppTrackFiles) {
-  const typeMap = {};
-
-  rppTrackFiles.forEach(file => {
-    const meta = parseRppTrackOrderedFileMeta_(file.getName());
-    if (meta) {
-      typeMap[meta.type] = true;
-    }
-  });
-
-  return RPP_TRACK_REQUIRED_TYPES.filter(type => typeMap[type] !== true);
-}
-
-function startRppUnyouDelay_(rppTrackFiles, rppUnyouFiles) {
-  const state = {
-    startedAt: new Date().getTime(),
-    rppTrackFileNames: rppTrackFiles.map(file => file.getName()),
-    rppUnyouFileNames: rppUnyouFiles.map(file => file.getName()),
-  };
-
-  PropertiesService
-    .getScriptProperties()
-    .setProperty(RPP_UNYOU_DELAY_STATE_PROPERTY_KEY, JSON.stringify(state));
-
-  Logger.log(`広告表示処理を3分待機します files=${state.rppUnyouFileNames.join(', ')}`);
-}
-
-function isRppUnyouDelayReady_(rppUnyouFiles) {
-  if (!rppUnyouFiles || rppUnyouFiles.length === 0) {
-    return true;
-  }
-
-  const state = getRppUnyouDelayState_();
-  if (!state) {
-    return true;
-  }
-
-  const startedAt = Number(state.startedAt);
-  if (!startedAt) {
-    clearRppUnyouDelayState_();
-    return true;
-  }
-
-  const elapsedMs = new Date().getTime() - startedAt;
-  if (elapsedMs >= RPP_UNYOU_DELAY_BEFORE_PROCESS_MS) {
-    return true;
-  }
-
-  const remainingMs = RPP_UNYOU_DELAY_BEFORE_PROCESS_MS - elapsedMs;
-  Logger.log(`広告表示処理待機中 remainingMs=${remainingMs}`);
-  return false;
-}
-
-function clearRppUnyouDelayIfTargetMissing_(rppUnyouFiles) {
-  const state = getRppUnyouDelayState_();
-  if (!state || (rppUnyouFiles && rppUnyouFiles.length > 0)) {
-    return;
-  }
-
-  Logger.log('広告表示処理の待機状態をクリアします reason=target_missing');
-  clearRppUnyouDelayState_();
-}
-
-function getRppUnyouDelayState_() {
-  const value = PropertiesService
-    .getScriptProperties()
-    .getProperty(RPP_UNYOU_DELAY_STATE_PROPERTY_KEY);
-
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    Logger.log(`広告表示処理の待機状態をクリアします reason=parse_error error=${error.message}`);
-    clearRppUnyouDelayState_();
-    return null;
-  }
-}
-
-function clearRppUnyouDelayState_() {
-  PropertiesService
-    .getScriptProperties()
-    .deleteProperty(RPP_UNYOU_DELAY_STATE_PROPERTY_KEY);
-}
-
 function processOrderedDispatchFiles_(stageFiles, allOrderedFiles, handledFileIds) {
   for (let i = 0; i < stageFiles.length; i++) {
     const file = stageFiles[i];
     const result = dispatchInputFile_(file);
-    const destinationFolderId = isProcessedResult_(result)
+    const destinationFolderId = result.status === 'success'
       ? DRIVE_FOLDERS.processed
       : DRIVE_FOLDERS.error;
 
@@ -312,7 +180,7 @@ function processOrderedDispatchFiles_(stageFiles, allOrderedFiles, handledFileId
     logResult_(file.getName(), result);
     markHandledFile_(handledFileIds, file);
 
-    if (!isProcessedResult_(result)) {
+    if (result.status !== 'success') {
       moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, result.message);
       return false;
     }
@@ -413,10 +281,6 @@ function dispatchInputFile_(file) {
   } catch (e) {
     return { status: 'error', message: e.message, rowsImported: 0 };
   }
-}
-
-function isProcessedResult_(result) {
-  return result && (result.status === 'success' || result.status === 'skipped');
 }
 
 function moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, reason) {

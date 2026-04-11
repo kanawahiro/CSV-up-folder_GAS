@@ -24,22 +24,18 @@ Google Apps Script で Google Drive の入力フォルダを定期監視し、�
 | 順番 | 処理 | 対象ファイル名 | 送信先 |
 | --- | --- | --- | --- |
 | 1 | RPPトラック | `YYYYMMDD_item_list.csv` | RPP-Track |
-| 1 | RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDDHHMMSS*.zip` | RPP-Track |
-| 1 | RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDDHHMMSS*.zip` | RPP-Track |
+| 1 | RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | RPP-Track |
+| 1 | RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | RPP-Track |
 | 2 | 広告表示 | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` と `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` のペア | RPP-unyou |
 | 3 | 楽天サーチ | `act_*.csv` / `act_*.zip` | 楽天サーチ 記録用 |
 
 RPPトラック内では、必ず以下の順に処理します。
 
 1. `YYYYMMDD_item_list.csv`
-2. `rpp_item_reports_limelimedou_YYYYMMDDHHMMSS*.zip`
-3. `rpp_keyword_reports_limelimedou_YYYYMMDDHHMMSS*.zip`
+2. `rpp_item_reports_limelimedou_YYYYMMDD*.csv`
+3. `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv`
 
 前の処理が成功した場合だけ次へ進みます。
-
-RPPトラック3種が揃っていない場合は処理を始めず、対象ファイルを `input` に残して次回の1分トリガーで再判定します。
-
-RPPトラック3種と広告表示ファイルが同時にある場合、RPPトラック3種がすべて成功した後、広告表示の処理前に約3分待機します。待機中の広告表示ファイルと楽天サーチファイルは `input` に残り、1分ごとの次回以降のトリガーで3分経過を確認してから処理されます。
 
 ## エラー時の動き
 
@@ -57,8 +53,8 @@ RPPトラック3種と広告表示ファイルが同時にある場合、RPPト�
 | --- | --- | --- | --- | --- |
 | `clickpostReport` を含む | 例: `会津clickpostReport.csv` | CSV を加工して重複対策版を別フォルダへ出力 | 元ファイルを `processed` へ移動 | 元ファイルを `error` へ移動 |
 | RPPトラック | `YYYYMMDD_item_list.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
-| RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDDHHMMSS*.zip` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
-| RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDDHHMMSS*.zip` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
+| RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
+| RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
 | 広告表示 CPC | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` | rankファイルとペアで子GASへPOST | ペア処理成功時に `processed` | ペア処理失敗時に `error` |
 | 広告表示 rank | `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` | CPCファイルとペアで子GASへPOST | ペア処理成功時に `processed` | ペア処理失敗時に `error` |
 | 楽天サーチ | `act_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
@@ -91,8 +87,6 @@ RPPトラック3種と広告表示ファイルが同時にある場合、RPPト�
 
 - CPC: `rpp_item_keyword_limelimedou_YYYYMMDD*.csv`
 - rank: `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv`
-
-RPPトラック3種の後続として広告表示を処理する場合は、RPPトラック3種の成功後すぐには実行せず、約3分経過してから処理します。`Utilities.sleep` で実行を止めるのではなく、待機開始時刻を保存し、1分ごとのトリガーで経過時間を判定します。
 
 ペア不足または同種ファイルの重複がある場合はエラー扱いです。対象ファイルを `error` へ移動し、順番制御対象の後続処理は止めます。
 
