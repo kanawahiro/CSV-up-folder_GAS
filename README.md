@@ -41,25 +41,24 @@ RPPトラック内では、必ず以下の順に処理します。
 
 ## エラー時の動き
 
-順番制御対象の処理中にエラーが出た場合は、そこで停止します。
+順番制御対象の処理中にエラーが出ても、そこで停止せず次の処理へ進みます。
 
 - 失敗したファイルは `error` フォルダへ移動する
-- まだ処理していない順番制御対象ファイルも `error` フォルダへ移動する
-- 順番制御対象ファイルは `input` に残さない
-- 未処理で `error` へ移動したファイルには `前段エラーのため未処理でerror移動` のログを残す
-- 順番制御対象ではないファイルは、この一括 `error` 移動の対象外
+- 成功したファイルは `processed` フォルダへ移動する
+- 失敗していない後続ファイルは通常どおり処理する
+- 広告表示ペアの片方不足や重複など、その処理単位自体が成立しない場合は対象ファイルだけ `error` へ移動する
 
 ## 処理一覧
 
 | 条件 | 対象ファイル名 | 実行される処理 | 成功時 | 失敗時 |
 | --- | --- | --- | --- | --- |
 | `clickpostReport` を含む | 例: `会津clickpostReport.csv` | CSV を加工して重複対策版を別フォルダへ出力 | 元ファイルを `processed` へ移動 | 元ファイルを `error` へ移動 |
-| RPPトラック | `YYYYMMDD_item_list.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
-| RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
-| RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
+| RPPトラック | `YYYYMMDD_item_list.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続継続 |
+| RPPトラック | `rpp_item_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続継続 |
+| RPPトラック | `rpp_keyword_reports_limelimedou_YYYYMMDD*.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続継続 |
 | 広告表示 CPC | `rpp_item_keyword_limelimedou_YYYYMMDD*.csv` | rankファイルとペアで子GASへPOST | ペア処理成功時に `processed` | ペア処理失敗時に `error` |
 | 広告表示 rank | `rpp_keyword_ranking_limelimedou_YYYYMMDDHHMMSS(_n).csv` | CPCファイルとペアで子GASへPOST | ペア処理成功時に `processed` | ペア処理失敗時に `error` |
-| 楽天サーチ | `act_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続停止 |
+| 楽天サーチ | `act_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動し後続継続 |
 | 会津在庫減算取込 | ファイル名に `ピッキング` を含む `.csv` | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動 |
 | その他RPP | `rpp_` で始まるCSV/ZIP | 子GASへ `fileId` をPOST | `processed` へ移動 | `error` へ移動 |
 | 未対応形式 | CSV/ZIP以外 | エラー扱い | なし | `error` へ移動 |
@@ -92,7 +91,7 @@ RPPトラック内では、必ず以下の順に処理します。
 
 広告表示ペアは、順番制御対象内では最後に処理されます。処理直前に待機開始時刻を保存し、約3分経過後のトリガーで子GASへPOSTします。`Utilities.sleep` で実行を止める方式ではありません。
 
-ペア不足または同種ファイルの重複がある場合はエラー扱いです。対象ファイルを `error` へ移動し、順番制御対象の後続処理は止めます。
+ペア不足または同種ファイルの重複がある場合はエラー扱いです。対象ファイルを `error` へ移動しますが、他の処理は続行します。
 
 戻り値の `csvImportStatus` が `success` なら成功扱いです。`rppTrackStatus` が `error` でも、CSV取込みが成功していれば2ファイルとも `processed` に移動します。
 

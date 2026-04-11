@@ -66,8 +66,6 @@ const RPP_TRACK_ORDERED_TYPE_ORDER = {
   keywordReports: 3,
 };
 
-const ORDERED_UPLOAD_SKIPPED_MESSAGE = '前段エラーのため未処理でerror移動';
-
 
 // ============================================================
 // メイン処理（タイマートリガーで定期実行）
@@ -195,12 +193,12 @@ function processOrderedUploadFiles_(files) {
     .sort(compareRppUnyouFiles_);
 
   const rppTrackResult = processOrderedDispatchFiles_(rppTrackFiles, files, handledFileIds);
-  if (rppTrackResult !== ORDERED_STAGE_SUCCESS) {
+  if (rppTrackResult === ORDERED_STAGE_DEFERRED) {
     return false;
   }
 
   const rakutenSearchResult = processOrderedDispatchFiles_(rakutenSearchFiles, files, handledFileIds);
-  if (rakutenSearchResult !== ORDERED_STAGE_SUCCESS) {
+  if (rakutenSearchResult === ORDERED_STAGE_DEFERRED) {
     return false;
   }
 
@@ -213,7 +211,7 @@ function processOrderedUploadFiles_(files) {
     clearRppUnyouDelayState_();
   }
 
-  return rppUnyouResult === ORDERED_STAGE_SUCCESS;
+  return rppUnyouResult !== ORDERED_STAGE_DEFERRED;
 }
 
 function isRppUnyouDelayReady_(rppUnyouFiles) {
@@ -310,8 +308,7 @@ function processOrderedDispatchFiles_(stageFiles, allOrderedFiles, handledFileId
       markHandledFile_(handledFileIds, file);
 
       if (result.status !== 'success') {
-        moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, result.message);
-        return ORDERED_STAGE_FAILED;
+        Logger.log(`順番制御対象エラー継続 file=${file.getName()} message=${result.message}`);
       }
     } finally {
       finishFilesProcessing_([file]);
@@ -345,8 +342,8 @@ function processOrderedRppUnyouFiles_(files, allOrderedFiles, handledFileIds) {
         moveFileToErrorWithProcessingGuard_(file, result);
         markHandledFile_(handledFileIds, file);
       });
-      moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, result.message);
-      return ORDERED_STAGE_FAILED;
+      Logger.log(`RPP運用CSVペアエラー継続 pair=${pair.pairKey} message=${result.message}`);
+      continue;
     }
 
     const pairResult = processOrderedRppUnyouPair_(pair, handledFileIds);
@@ -356,8 +353,7 @@ function processOrderedRppUnyouFiles_(files, allOrderedFiles, handledFileIds) {
 
     if (pairResult !== ORDERED_STAGE_SUCCESS) {
       const message = `RPP運用CSV処理失敗 pair=${pair.pairKey}`;
-      moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, message);
-      return ORDERED_STAGE_FAILED;
+      Logger.log(`${message} 後続処理は継続します`);
     }
   }
 
@@ -419,23 +415,6 @@ function dispatchInputFile_(file) {
   } catch (e) {
     return { status: 'error', message: e.message, rowsImported: 0 };
   }
-}
-
-function moveRemainingOrderedFilesToError_(allOrderedFiles, handledFileIds, reason) {
-  const result = {
-    status: 'error',
-    message: `${ORDERED_UPLOAD_SKIPPED_MESSAGE}: ${reason || ''}`.trim(),
-    rowsImported: 0,
-  };
-
-  allOrderedFiles.forEach(file => {
-    if (isHandledFile_(handledFileIds, file)) {
-      return;
-    }
-
-    moveFileToErrorWithProcessingGuard_(file, result);
-    markHandledFile_(handledFileIds, file);
-  });
 }
 
 function markHandledFile_(handledFileIds, file) {
