@@ -50,8 +50,8 @@ const RPP_UNYOU_DELAY_BEFORE_PROCESS_MS = 3 * 60 * 1000;
 
 const RPP_TRACK_ORDERED_FILE_PATTERNS = {
   itemList: /^(\d{8})_item_list\.csv$/i,
-  itemReports: /^rpp_item_reports_limelimedou_(\d{8})\d+\.csv$/i,
-  keywordReports: /^rpp_keyword_reports_limelimedou_(\d{8})\d+\.csv$/i,
+  itemReports: /^rpp_item_reports_limelimedou_(\d{8})\d+\.zip$/i,
+  keywordReports: /^rpp_keyword_reports_limelimedou_(\d{8})\d+\.zip$/i,
 };
 
 const RPP_TRACK_ORDERED_TYPE_ORDER = {
@@ -60,6 +60,7 @@ const RPP_TRACK_ORDERED_TYPE_ORDER = {
   keywordReports: 3,
 };
 
+const RPP_TRACK_REQUIRED_TYPES = ['itemList', 'itemReports', 'keywordReports'];
 const ORDERED_UPLOAD_SKIPPED_MESSAGE = '前段エラーのため未処理でerror移動';
 
 
@@ -157,6 +158,11 @@ function processOrderedUploadFiles_(files) {
 
   clearRppUnyouDelayIfTargetMissing_(rppUnyouFiles);
 
+  if (shouldWaitForCompleteRppTrackSet_(rppTrackFiles)) {
+    Logger.log(`RPPトラック3種待機中 missing=${getMissingRppTrackTypes_(rppTrackFiles).join(',')}`);
+    return false;
+  }
+
   if (!processOrderedDispatchFiles_(rppTrackFiles, files, handledFileIds)) {
     return false;
   }
@@ -187,7 +193,37 @@ function processOrderedUploadFiles_(files) {
 }
 
 function shouldStartRppUnyouDelay_(rppTrackFiles, rppUnyouFiles) {
-  return rppTrackFiles.length > 0 && rppUnyouFiles.length > 0;
+  return hasCompleteRppTrackSet_(rppTrackFiles) && rppUnyouFiles.length > 0;
+}
+
+function shouldWaitForCompleteRppTrackSet_(rppTrackFiles) {
+  return rppTrackFiles.length > 0 && !hasCompleteRppTrackSet_(rppTrackFiles);
+}
+
+function hasCompleteRppTrackSet_(rppTrackFiles) {
+  const typeMap = {};
+
+  rppTrackFiles.forEach(file => {
+    const meta = parseRppTrackOrderedFileMeta_(file.getName());
+    if (meta) {
+      typeMap[meta.type] = true;
+    }
+  });
+
+  return RPP_TRACK_REQUIRED_TYPES.every(type => typeMap[type] === true);
+}
+
+function getMissingRppTrackTypes_(rppTrackFiles) {
+  const typeMap = {};
+
+  rppTrackFiles.forEach(file => {
+    const meta = parseRppTrackOrderedFileMeta_(file.getName());
+    if (meta) {
+      typeMap[meta.type] = true;
+    }
+  });
+
+  return RPP_TRACK_REQUIRED_TYPES.filter(type => typeMap[type] !== true);
 }
 
 function startRppUnyouDelay_(rppTrackFiles, rppUnyouFiles) {
