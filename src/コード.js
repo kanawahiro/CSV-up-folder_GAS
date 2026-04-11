@@ -45,26 +45,6 @@ const RPP_UNYOU_FILE_PATTERNS = {
 };
 
 const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
-const RPP_UNYOU_DELAY_STATE_PROPERTY_KEY = 'RPP_UNYOU_DELAY_BEFORE_LAST_PROCESS_STATE';
-const RPP_UNYOU_DELAY_BEFORE_PROCESS_MS = 3 * 60 * 1000;
-
-const PROCESS_INPUT_FOLDER_LOCK_WAIT_MS = 5000;
-const FILE_PROCESSING_PROPERTY_PREFIX = 'FILE_PROCESSING_';
-const ORDERED_STAGE_SUCCESS = 'success';
-const ORDERED_STAGE_FAILED = 'failed';
-const ORDERED_STAGE_DEFERRED = 'deferred';
-
-const RPP_TRACK_ORDERED_FILE_PATTERNS = {
-  itemList: /^(\d{8})_item_list\.csv$/i,
-  itemReports: /^rpp_item_reports_limelimedou_(\d{8})\d+\.csv$/i,
-  keywordReports: /^rpp_keyword_reports_limelimedou_(\d{8})\d+\.csv$/i,
-};
-
-const RPP_TRACK_ORDERED_TYPE_ORDER = {
-  itemList: 1,
-  itemReports: 2,
-  keywordReports: 3,
-};
 
 
 // ============================================================
@@ -72,74 +52,41 @@ const RPP_TRACK_ORDERED_TYPE_ORDER = {
 // ============================================================
 
 function processInputFolder() {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(PROCESS_INPUT_FOLDER_LOCK_WAIT_MS)) {
-    Logger.log('processInputFolder skipped because another execution is running.');
-    return;
-  }
-
-  try {
-    processInputFolderLocked_();
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-function processInputFolderLocked_() {
   const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-  const files = collectInputFiles_(inputFolder);
-  const clickpostFiles = [];
-  const orderedUploadFiles = [];
-  const regularFiles = [];
-
-  files.forEach(file => {
+  const rppUnyouFiles = [];
+  const files = inputFolder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
     const fileName = file.getName();
 
     if (isClickpostReportFile_(fileName)) {
-      clickpostFiles.push(file);
-      return;
+      let clickpostResult;
+
+      try {
+        clickpostResult = processClickpostReportFile_(file);
+      } catch (e) {
+        clickpostResult = { status: 'error', message: e.message, rowsImported: 0 };
+      }
+
+      if (clickpostResult.status === 'success') {
+        moveFile_(file, DRIVE_FOLDERS.processed);
+      } else {
+        moveFile_(file, DRIVE_FOLDERS.error);
+      }
+
+      logResult_(fileName, clickpostResult);
+      continue;
     }
 
-    if (isOrderedUploadTargetFile_(fileName)) {
-      orderedUploadFiles.push(file);
-      return;
+    if (isRppUnyouManagedFile_(file.getName())) {
+      rppUnyouFiles.push(file);
+      continue;
     }
 
-    regularFiles.push(file);
-  });
+    let result;
 
-  clickpostFiles.forEach(file => processClickpostReportInputFile_(file));
-
-  if (!processOrderedUploadFiles_(orderedUploadFiles)) {
-    return;
-  }
-
-  regularFiles.forEach(file => processRegularInputFile_(file));
-}
-
-function collectInputFiles_(inputFolder) {
-  const files = [];
-  const iterator = inputFolder.getFiles();
-
-  while (iterator.hasNext()) {
-    files.push(iterator.next());
-  }
-
-  return files;
-}
-
-function processClickpostReportInputFile_(file) {
-  const fileName = file.getName();
-  if (!startFilesProcessing_([file])) {
-    logFileProcessingSkipped_(file);
-    return;
-  }
-
-  let result;
-
-  try {
     try {
-      result = processClickpostReportFile_(file);
+      result = dispatchToChild_(file);
     } catch (e) {
       result = { status: 'error', message: e.message, rowsImported: 0 };
     }
@@ -151,331 +98,9 @@ function processClickpostReportInputFile_(file) {
     }
 
     logResult_(fileName, result);
-  } finally {
-    finishFilesProcessing_([file]);
-  }
-}
-
-function processRegularInputFile_(file) {
-  if (!startFilesProcessing_([file])) {
-    logFileProcessingSkipped_(file);
-    return;
   }
 
-  try {
-    const result = dispatchInputFile_(file);
-    const destinationFolderId = result.status === 'success'
-      ? DRIVE_FOLDERS.processed
-      : DRIVE_FOLDERS.error;
-
-    moveFile_(file, destinationFolderId);
-    logResult_(file.getName(), result);
-  } finally {
-    finishFilesProcessing_([file]);
-  }
-}
-
-function processOrderedUploadFiles_(files) {
-  if (!files || files.length === 0) {
-    clearRppUnyouDelayState_();
-    return true;
-  }
-
-  const handledFileIds = {};
-  const rppTrackFiles = files
-    .filter(file => isRppTrackOrderedFile_(file.getName()))
-    .sort(compareRppTrackOrderedFiles_);
-  const rakutenSearchFiles = files
-    .filter(file => isRakutenSearchFile_(file.getName()))
-    .sort(compareFilesByName_);
-  const rppUnyouFiles = files
-    .filter(file => isRppUnyouManagedFile_(file.getName()))
-    .sort(compareRppUnyouFiles_);
-
-  const rppTrackResult = processOrderedDispatchFiles_(rppTrackFiles, files, handledFileIds);
-  if (rppTrackResult === ORDERED_STAGE_DEFERRED) {
-    return false;
-  }
-
-  const rakutenSearchResult = processOrderedDispatchFiles_(rakutenSearchFiles, files, handledFileIds);
-  if (rakutenSearchResult === ORDERED_STAGE_DEFERRED) {
-    return false;
-  }
-
-  if (!isRppUnyouDelayReady_(rppUnyouFiles)) {
-    return false;
-  }
-
-  const rppUnyouResult = processOrderedRppUnyouFiles_(rppUnyouFiles, files, handledFileIds);
-  if (rppUnyouFiles.length > 0 && rppUnyouResult !== ORDERED_STAGE_DEFERRED) {
-    clearRppUnyouDelayState_();
-  }
-
-  return rppUnyouResult !== ORDERED_STAGE_DEFERRED;
-}
-
-function isRppUnyouDelayReady_(rppUnyouFiles) {
-  if (!rppUnyouFiles || rppUnyouFiles.length === 0) {
-    clearRppUnyouDelayState_();
-    return true;
-  }
-
-  const fileSignature = buildFileSignature_(rppUnyouFiles);
-  const state = getRppUnyouDelayState_();
-
-  if (!state || state.fileSignature !== fileSignature) {
-    startRppUnyouDelay_(rppUnyouFiles, fileSignature);
-    return false;
-  }
-
-  const startedAt = Number(state.startedAt);
-  if (!startedAt) {
-    startRppUnyouDelay_(rppUnyouFiles, fileSignature);
-    return false;
-  }
-
-  const elapsedMs = new Date().getTime() - startedAt;
-  if (elapsedMs >= RPP_UNYOU_DELAY_BEFORE_PROCESS_MS) {
-    return true;
-  }
-
-  const remainingMs = RPP_UNYOU_DELAY_BEFORE_PROCESS_MS - elapsedMs;
-  Logger.log(`広告表示処理待機中 remainingMs=${remainingMs}`);
-  return false;
-}
-
-function startRppUnyouDelay_(rppUnyouFiles, fileSignature) {
-  const state = {
-    startedAt: new Date().getTime(),
-    fileSignature,
-    fileNames: rppUnyouFiles.map(file => file.getName()),
-  };
-
-  PropertiesService
-    .getScriptProperties()
-    .setProperty(RPP_UNYOU_DELAY_STATE_PROPERTY_KEY, JSON.stringify(state));
-
-  Logger.log(`広告表示処理を3分待機します files=${state.fileNames.join(', ')}`);
-}
-
-function getRppUnyouDelayState_() {
-  const value = PropertiesService
-    .getScriptProperties()
-    .getProperty(RPP_UNYOU_DELAY_STATE_PROPERTY_KEY);
-
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    Logger.log(`広告表示処理の待機状態をクリアします reason=parse_error error=${error.message}`);
-    clearRppUnyouDelayState_();
-    return null;
-  }
-}
-
-function clearRppUnyouDelayState_() {
-  PropertiesService
-    .getScriptProperties()
-    .deleteProperty(RPP_UNYOU_DELAY_STATE_PROPERTY_KEY);
-}
-
-function buildFileSignature_(files) {
-  return files
-    .map(file => file.getId())
-    .sort()
-    .join(',');
-}
-
-function processOrderedDispatchFiles_(stageFiles, allOrderedFiles, handledFileIds) {
-  for (let i = 0; i < stageFiles.length; i++) {
-    const file = stageFiles[i];
-    if (!startFilesProcessing_([file])) {
-      logFileProcessingSkipped_(file);
-      return ORDERED_STAGE_DEFERRED;
-    }
-
-    try {
-      const result = dispatchInputFile_(file);
-      const destinationFolderId = result.status === 'success'
-        ? DRIVE_FOLDERS.processed
-        : DRIVE_FOLDERS.error;
-
-      moveFile_(file, destinationFolderId);
-      logResult_(file.getName(), result);
-      markHandledFile_(handledFileIds, file);
-
-      if (result.status !== 'success') {
-        Logger.log(`順番制御対象エラー継続 file=${file.getName()} message=${result.message}`);
-      }
-    } finally {
-      finishFilesProcessing_([file]);
-    }
-  }
-
-  return ORDERED_STAGE_SUCCESS;
-}
-
-function processOrderedRppUnyouFiles_(files, allOrderedFiles, handledFileIds) {
-  if (!files || files.length === 0) {
-    return ORDERED_STAGE_SUCCESS;
-  }
-
-  const pairMap = buildRppUnyouPairMap_(files);
-  const pairKeys = Array.from(pairMap.keys()).sort();
-
-  for (let i = 0; i < pairKeys.length; i++) {
-    const pair = pairMap.get(pairKeys[i]);
-    const pairValidationError = validateRppUnyouPair_(pair);
-
-    if (pairValidationError) {
-      const errorFiles = pair.cpcFiles.concat(pair.rankFiles);
-      const result = {
-        status: 'error',
-        message: pairValidationError,
-        rowsImported: 0,
-      };
-
-      errorFiles.forEach(file => {
-        moveFileToErrorWithProcessingGuard_(file, result);
-        markHandledFile_(handledFileIds, file);
-      });
-      Logger.log(`RPP運用CSVペアエラー継続 pair=${pair.pairKey} message=${result.message}`);
-      continue;
-    }
-
-    const pairResult = processOrderedRppUnyouPair_(pair, handledFileIds);
-    if (pairResult === ORDERED_STAGE_DEFERRED) {
-      return ORDERED_STAGE_DEFERRED;
-    }
-
-    if (pairResult !== ORDERED_STAGE_SUCCESS) {
-      const message = `RPP運用CSV処理失敗 pair=${pair.pairKey}`;
-      Logger.log(`${message} 後続処理は継続します`);
-    }
-  }
-
-  return ORDERED_STAGE_SUCCESS;
-}
-
-function processOrderedRppUnyouPair_(pair, handledFileIds) {
-  const propertyKey = `${RPP_UNYOU_PAIR_PROPERTY_PREFIX}${pair.pairKey}`;
-  const cpcFile = pair.cpcFiles[0];
-  const rankFile = pair.rankFiles[0];
-
-  if (!startFilesProcessing_([cpcFile, rankFile])) {
-    logFileProcessingSkipped_(cpcFile);
-    logFileProcessingSkipped_(rankFile);
-    return ORDERED_STAGE_DEFERRED;
-  }
-
-  try {
-    if (!startRppUnyouPairProcessing_(propertyKey)) {
-      Logger.log(`RPP運用CSV処理スキップ pair=${pair.pairKey}`);
-      return ORDERED_STAGE_DEFERRED;
-    }
-
-    let result;
-
-    try {
-      result = dispatchRppUnyouPairToChild_(pair.pairKey, cpcFile, rankFile);
-    } catch (error) {
-      result = { status: 'error', message: error.message, rowsImported: 0, csvImportStatus: 'error' };
-    }
-
-    const destinationFolderId = isRppUnyouCsvImportSuccessful_(result)
-      ? DRIVE_FOLDERS.processed
-      : DRIVE_FOLDERS.error;
-
-    try {
-      moveFile_(cpcFile, destinationFolderId);
-      moveFile_(rankFile, destinationFolderId);
-    } finally {
-      finishRppUnyouPairProcessing_(propertyKey);
-    }
-
-    logResult_(cpcFile.getName(), result);
-    logResult_(rankFile.getName(), result);
-    markHandledFile_(handledFileIds, cpcFile);
-    markHandledFile_(handledFileIds, rankFile);
-
-    return isRppUnyouCsvImportSuccessful_(result)
-      ? ORDERED_STAGE_SUCCESS
-      : ORDERED_STAGE_FAILED;
-  } finally {
-    finishFilesProcessing_([cpcFile, rankFile]);
-  }
-}
-
-function dispatchInputFile_(file) {
-  try {
-    return dispatchToChild_(file);
-  } catch (e) {
-    return { status: 'error', message: e.message, rowsImported: 0 };
-  }
-}
-
-function markHandledFile_(handledFileIds, file) {
-  handledFileIds[file.getId()] = true;
-}
-
-function isHandledFile_(handledFileIds, file) {
-  return handledFileIds[file.getId()] === true;
-}
-
-function moveFileToErrorWithProcessingGuard_(file, result) {
-  if (!startFilesProcessing_([file])) {
-    logFileProcessingSkipped_(file);
-    return;
-  }
-
-  try {
-    moveFile_(file, DRIVE_FOLDERS.error);
-    logResult_(file.getName(), result);
-  } finally {
-    finishFilesProcessing_([file]);
-  }
-}
-
-function startFilesProcessing_(files) {
-  const properties = PropertiesService.getScriptProperties();
-  const startedKeys = [];
-
-  for (let i = 0; i < files.length; i++) {
-    const key = buildFileProcessingPropertyKey_(files[i]);
-
-    if (properties.getProperty(key)) {
-      startedKeys.forEach(startedKey => properties.deleteProperty(startedKey));
-      return false;
-    }
-
-    properties.setProperty(key, String(new Date().getTime()));
-    startedKeys.push(key);
-  }
-
-  return true;
-}
-
-function finishFilesProcessing_(files) {
-  const properties = PropertiesService.getScriptProperties();
-
-  files.forEach(file => {
-    properties.deleteProperty(buildFileProcessingPropertyKey_(file));
-  });
-}
-
-function buildFileProcessingPropertyKey_(file) {
-  return `${FILE_PROCESSING_PROPERTY_PREFIX}${file.getId()}`;
-}
-
-function logFileProcessingSkipped_(file) {
-  logResult_(file.getName(), {
-    status: 'skipped',
-    rowsImported: 0,
-    message: `処理中のためスキップ fileId=${file.getId()}`,
-  });
+  processRppUnyouFilePairs_(rppUnyouFiles);
 }
 
 
@@ -543,75 +168,6 @@ function isZipFile_(fileName, mimeType) {
   return normalizedFileName.endsWith('.zip') || mimeType === 'application/zip';
 }
 
-function isOrderedUploadTargetFile_(fileName) {
-  return isRppTrackOrderedFile_(fileName)
-    || isRakutenSearchFile_(fileName)
-    || isRppUnyouManagedFile_(fileName);
-}
-
-function isRppTrackOrderedFile_(fileName) {
-  return Boolean(parseRppTrackOrderedFileMeta_(fileName));
-}
-
-function parseRppTrackOrderedFileMeta_(fileName) {
-  const normalizedFileName = String(fileName || '');
-  const itemListMatch = normalizedFileName.match(RPP_TRACK_ORDERED_FILE_PATTERNS.itemList);
-  if (itemListMatch) {
-    return { type: 'itemList', typeOrder: RPP_TRACK_ORDERED_TYPE_ORDER.itemList, dateKey: itemListMatch[1] };
-  }
-
-  const itemReportsMatch = normalizedFileName.match(RPP_TRACK_ORDERED_FILE_PATTERNS.itemReports);
-  if (itemReportsMatch) {
-    return { type: 'itemReports', typeOrder: RPP_TRACK_ORDERED_TYPE_ORDER.itemReports, dateKey: itemReportsMatch[1] };
-  }
-
-  const keywordReportsMatch = normalizedFileName.match(RPP_TRACK_ORDERED_FILE_PATTERNS.keywordReports);
-  if (keywordReportsMatch) {
-    return { type: 'keywordReports', typeOrder: RPP_TRACK_ORDERED_TYPE_ORDER.keywordReports, dateKey: keywordReportsMatch[1] };
-  }
-
-  return null;
-}
-
-function isRakutenSearchFile_(fileName) {
-  return String(fileName || '').startsWith('act_');
-}
-
-function compareRppTrackOrderedFiles_(a, b) {
-  const aMeta = parseRppTrackOrderedFileMeta_(a.getName());
-  const bMeta = parseRppTrackOrderedFileMeta_(b.getName());
-  const typeOrderDiff = aMeta.typeOrder - bMeta.typeOrder;
-  if (typeOrderDiff !== 0) {
-    return typeOrderDiff;
-  }
-
-  const dateDiff = aMeta.dateKey.localeCompare(bMeta.dateKey);
-  if (dateDiff !== 0) {
-    return dateDiff;
-  }
-
-  return compareFilesByName_(a, b);
-}
-
-function compareRppUnyouFiles_(a, b) {
-  const aMeta = parseRppUnyouFileMeta_(a.getName());
-  const bMeta = parseRppUnyouFileMeta_(b.getName());
-  const pairKeyDiff = aMeta.pairKey.localeCompare(bMeta.pairKey);
-  if (pairKeyDiff !== 0) {
-    return pairKeyDiff;
-  }
-
-  if (aMeta.type !== bMeta.type) {
-    return aMeta.type === 'cpc' ? -1 : 1;
-  }
-
-  return compareFilesByName_(a, b);
-}
-
-function compareFilesByName_(a, b) {
-  return a.getName().localeCompare(b.getName());
-}
-
 function isRppUnyouManagedFile_(fileName) {
   return Boolean(parseRppUnyouFileMeta_(fileName));
 }
@@ -636,11 +192,6 @@ function processRppUnyouFilePairs_(files) {
     return;
   }
 
-  const pairMap = buildRppUnyouPairMap_(files);
-  pairMap.forEach(pair => processRppUnyouPair_(pair));
-}
-
-function buildRppUnyouPairMap_(files) {
   const pairMap = new Map();
 
   files.forEach(file => {
@@ -664,33 +215,20 @@ function buildRppUnyouPairMap_(files) {
     pairMap.set(meta.pairKey, pair);
   });
 
-  return pairMap;
-}
-
-function validateRppUnyouPair_(pair) {
-  if (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0) {
-    return `RPP運用CSVのペアが不足しています pair=${pair.pairKey}`;
-  }
-
-  if (pair.cpcFiles.length > 1 || pair.rankFiles.length > 1) {
-    return `RPP運用CSVが重複しています pair=${pair.pairKey}`;
-  }
-
-  return '';
+  pairMap.forEach(pair => processRppUnyouPair_(pair));
 }
 
 function processRppUnyouPair_(pair) {
-  const pairValidationError = validateRppUnyouPair_(pair);
-  if (pairValidationError && (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0)) {
+  if (pair.cpcFiles.length === 0 || pair.rankFiles.length === 0) {
     Logger.log(`RPP運用CSV待機中 pair=${pair.pairKey}`);
     return;
   }
 
-  if (pairValidationError) {
+  if (pair.cpcFiles.length > 1 || pair.rankFiles.length > 1) {
     const filesToMove = pair.cpcFiles.concat(pair.rankFiles);
     const result = {
       status: 'error',
-      message: pairValidationError,
+      message: `RPP運用CSVが重複しています pair=${pair.pairKey}`,
       rowsImported: 0,
     };
 
@@ -764,17 +302,33 @@ function isRppUnyouCsvImportSuccessful_(result) {
 }
 
 function startRppUnyouPairProcessing_(propertyKey) {
-  const properties = PropertiesService.getScriptProperties();
-  if (properties.getProperty(propertyKey)) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
     return false;
   }
 
-  properties.setProperty(propertyKey, String(new Date().getTime()));
-  return true;
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    if (properties.getProperty(propertyKey)) {
+      return false;
+    }
+
+    properties.setProperty(propertyKey, String(new Date().getTime()));
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function finishRppUnyouPairProcessing_(propertyKey) {
-  PropertiesService.getScriptProperties().deleteProperty(propertyKey);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(propertyKey);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function postToChildWebApp_(webAppUrl, payload, childDesc, contextLabel) {
