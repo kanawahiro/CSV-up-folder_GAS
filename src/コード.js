@@ -22,6 +22,11 @@ const DRIVE_FOLDERS = {
 const CHILD_SCRIPTS = [
   { prefix: 'act_', webAppUrl: 'https://script.google.com/macros/s/AKfycbwj9fQ2X_A9mZRwvlHUZD8vqlkvYzb2bPCzUwhsZv_vVxLYgjDbCnoqvvdTPDe4srXSvw/exec', desc: '楽天サーチ取込 (楽天サーチ 記録用)' },
   {
+    patterns: [/^\d{8}_\d{8}_日次_SKU別売上データ\.csv$/i],
+    webAppUrl: 'https://script.google.com/macros/s/AKfycbxL7beih1QQh8AbzjwX3NkPAvjw2m6-094B_M3feE4AhXHzmgtcAW-_e5357FysH6Jh-w/exec',
+    desc: '販売実績CSV取込・分析更新',
+  },
+  {
     patterns: [/.*ピッキング.*\.csv$/i],
     webAppUrl: 'https://script.google.com/macros/s/AKfycbx-g5YT4kvVG1x4rd3jiDVLrtool1X0gGbaZejJ-VxMXuiTLCjL2_AsK066bzEKQaLK/exec',
     desc: '会津在庫減算取込 (ピッキングCSV)',
