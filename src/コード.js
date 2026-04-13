@@ -50,6 +50,12 @@ const RPP_UNYOU_FILE_PATTERNS = {
 };
 
 const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
+const FILE_PROCESS_PROPERTY_PREFIX = 'FILE_PROCESS_';
+const FILE_PROCESSING_STATUS = 'processing';
+const FILE_DONE_STATUS = 'done';
+const FILE_PROCESSING_TTL_MS = 60 * 60 * 1000;
+const FILE_DONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PROCESS_INPUT_LOCK_WAIT_MS = 5000;
 
 
 // ============================================================
@@ -57,55 +63,51 @@ const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
 // ============================================================
 
 function processInputFolder() {
-  const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
-  const rppUnyouFiles = [];
-  const files = inputFolder.getFiles();
-  while (files.hasNext()) {
-    const file = files.next();
-    const fileName = file.getName();
-
-    if (isClickpostReportFile_(fileName)) {
-      let clickpostResult;
-
-      try {
-        clickpostResult = processClickpostReportFile_(file);
-      } catch (e) {
-        clickpostResult = { status: 'error', message: e.message, rowsImported: 0 };
-      }
-
-      if (clickpostResult.status === 'success') {
-        moveFile_(file, DRIVE_FOLDERS.processed);
-      } else {
-        moveFile_(file, DRIVE_FOLDERS.error);
-      }
-
-      logResult_(fileName, clickpostResult);
-      continue;
-    }
-
-    if (isRppUnyouManagedFile_(file.getName())) {
-      rppUnyouFiles.push(file);
-      continue;
-    }
-
-    let result;
-
-    try {
-      result = dispatchToChild_(file);
-    } catch (e) {
-      result = { status: 'error', message: e.message, rowsImported: 0 };
-    }
-
-    if (result.status === 'success') {
-      moveFile_(file, DRIVE_FOLDERS.processed);
-    } else {
-      moveFile_(file, DRIVE_FOLDERS.error);
-    }
-
-    logResult_(fileName, result);
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(PROCESS_INPUT_LOCK_WAIT_MS)) {
+    Logger.log('processInputFolder スキップ: 他の実行が処理中です');
+    return;
   }
 
-  processRppUnyouFilePairs_(rppUnyouFiles);
+  try {
+    cleanupOldFileProcessMarks_();
+
+    const inputFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input);
+    const rppUnyouFiles = [];
+    const files = inputFolder.getFiles();
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+
+      if (isClickpostReportFile_(fileName)) {
+        processFileWithGuard_(file, function() {
+          try {
+            return processClickpostReportFile_(file);
+          } catch (e) {
+            return { status: 'error', message: e.message, rowsImported: 0 };
+          }
+        });
+        continue;
+      }
+
+      if (isRppUnyouManagedFile_(file.getName())) {
+        rppUnyouFiles.push(file);
+        continue;
+      }
+
+      processFileWithGuard_(file, function() {
+        try {
+          return dispatchToChild_(file);
+        } catch (e) {
+          return { status: 'error', message: e.message, rowsImported: 0 };
+        }
+      });
+    }
+
+    processRppUnyouFilePairs_(rppUnyouFiles);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 
@@ -237,10 +239,24 @@ function processRppUnyouPair_(pair) {
       rowsImported: 0,
     };
 
-    filesToMove.forEach(file => {
-      moveFile_(file, DRIVE_FOLDERS.error);
-      logResult_(file.getName(), result);
-    });
+    if (!startFilesProcessing_(filesToMove)) {
+      Logger.log(`RPP運用CSV重複処理スキップ pair=${pair.pairKey}`);
+      return;
+    }
+
+    let completed = false;
+    try {
+      filesToMove.forEach(file => {
+        moveFile_(file, DRIVE_FOLDERS.error);
+        markFileDone_(file.getId(), file.getName(), result.status);
+        logResult_(file.getName(), result);
+      });
+      completed = true;
+    } finally {
+      if (!completed) {
+        clearFilesProcessing_(filesToMove);
+      }
+    }
     return;
   }
 
@@ -252,7 +268,23 @@ function processRppUnyouPair_(pair) {
 
   const cpcFile = pair.cpcFiles[0];
   const rankFile = pair.rankFiles[0];
+  const pairFiles = [cpcFile, rankFile];
+
+  if (!startFilesProcessing_(pairFiles)) {
+    finishRppUnyouPairProcessing_(propertyKey);
+    Logger.log(`RPP運用CSV処理スキップ fileId処理中 pair=${pair.pairKey}`);
+    return;
+  }
+
+  if (!pairFiles.every(isFileInInputFolder_)) {
+    clearFilesProcessing_(pairFiles);
+    finishRppUnyouPairProcessing_(propertyKey);
+    Logger.log(`RPP運用CSV処理スキップ input外移動済み pair=${pair.pairKey}`);
+    return;
+  }
+
   let result;
+  let completed = false;
 
   try {
     result = dispatchRppUnyouPairToChild_(pair.pairKey, cpcFile, rankFile);
@@ -267,7 +299,13 @@ function processRppUnyouPair_(pair) {
   try {
     moveFile_(cpcFile, destinationFolderId);
     moveFile_(rankFile, destinationFolderId);
+    markFileDone_(cpcFile.getId(), cpcFile.getName(), result.status);
+    markFileDone_(rankFile.getId(), rankFile.getName(), result.status);
+    completed = true;
   } finally {
+    if (!completed) {
+      clearFilesProcessing_(pairFiles);
+    }
     finishRppUnyouPairProcessing_(propertyKey);
   }
 
@@ -307,33 +345,17 @@ function isRppUnyouCsvImportSuccessful_(result) {
 }
 
 function startRppUnyouPairProcessing_(propertyKey) {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) {
+  const properties = PropertiesService.getScriptProperties();
+  if (properties.getProperty(propertyKey)) {
     return false;
   }
 
-  try {
-    const properties = PropertiesService.getScriptProperties();
-    if (properties.getProperty(propertyKey)) {
-      return false;
-    }
-
-    properties.setProperty(propertyKey, String(new Date().getTime()));
-    return true;
-  } finally {
-    lock.releaseLock();
-  }
+  properties.setProperty(propertyKey, String(new Date().getTime()));
+  return true;
 }
 
 function finishRppUnyouPairProcessing_(propertyKey) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(5000);
-
-  try {
-    PropertiesService.getScriptProperties().deleteProperty(propertyKey);
-  } finally {
-    lock.releaseLock();
-  }
+  PropertiesService.getScriptProperties().deleteProperty(propertyKey);
 }
 
 function postToChildWebApp_(webAppUrl, payload, childDesc, contextLabel) {
@@ -397,6 +419,160 @@ function postToChildWebApp_(webAppUrl, payload, childDesc, contextLabel) {
   }
 
   return json;
+}
+
+function processFileWithGuard_(file, processor) {
+  const fileName = file.getName();
+  const fileId = file.getId();
+
+  if (!startFileProcessing_(fileId, fileName)) {
+    Logger.log(`ファイル処理スキップ fileName=${fileName} fileId=${fileId}`);
+    return null;
+  }
+
+  let completed = false;
+  try {
+    if (!isFileInInputFolder_(file)) {
+      Logger.log(`ファイル処理スキップ input外 fileName=${fileName} fileId=${fileId}`);
+      return null;
+    }
+
+    const result = processor();
+    const destinationFolderId = result.status === 'success'
+      ? DRIVE_FOLDERS.processed
+      : DRIVE_FOLDERS.error;
+
+    moveFile_(file, destinationFolderId);
+    markFileDone_(fileId, fileName, result.status);
+    completed = true;
+    logResult_(fileName, result);
+    return result;
+  } finally {
+    if (!completed) {
+      clearFileProcessing_(fileId);
+    }
+  }
+}
+
+function startFilesProcessing_(files) {
+  const startedFiles = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (!startFileProcessing_(file.getId(), file.getName())) {
+      clearFilesProcessing_(startedFiles);
+      return false;
+    }
+    startedFiles.push(file);
+  }
+
+  return true;
+}
+
+function clearFilesProcessing_(files) {
+  files.forEach(file => clearFileProcessing_(file.getId()));
+}
+
+function startFileProcessing_(fileId, fileName) {
+  const properties = PropertiesService.getScriptProperties();
+  const propertyKey = buildFileProcessPropertyKey_(fileId);
+  const current = parseFileProcessMark_(properties.getProperty(propertyKey));
+  const now = new Date().getTime();
+
+  if (current) {
+    const age = now - current.timestamp;
+    if (current.status === FILE_DONE_STATUS && age < FILE_DONE_TTL_MS) {
+      return false;
+    }
+    if (current.status === FILE_PROCESSING_STATUS && age < FILE_PROCESSING_TTL_MS) {
+      return false;
+    }
+  }
+
+  properties.setProperty(propertyKey, JSON.stringify({
+    status: FILE_PROCESSING_STATUS,
+    fileName: fileName,
+    timestamp: now,
+  }));
+  return true;
+}
+
+function markFileDone_(fileId, fileName, resultStatus) {
+  PropertiesService.getScriptProperties().setProperty(
+    buildFileProcessPropertyKey_(fileId),
+    JSON.stringify({
+      status: FILE_DONE_STATUS,
+      fileName: fileName,
+      resultStatus: resultStatus,
+      timestamp: new Date().getTime(),
+    })
+  );
+}
+
+function clearFileProcessing_(fileId) {
+  const properties = PropertiesService.getScriptProperties();
+  const propertyKey = buildFileProcessPropertyKey_(fileId);
+  const current = parseFileProcessMark_(properties.getProperty(propertyKey));
+
+  if (current && current.status === FILE_PROCESSING_STATUS) {
+    properties.deleteProperty(propertyKey);
+  }
+}
+
+function cleanupOldFileProcessMarks_() {
+  const properties = PropertiesService.getScriptProperties();
+  const allProperties = properties.getProperties();
+  const now = new Date().getTime();
+
+  Object.keys(allProperties).forEach(key => {
+    if (key.indexOf(FILE_PROCESS_PROPERTY_PREFIX) !== 0) {
+      return;
+    }
+
+    const current = parseFileProcessMark_(allProperties[key]);
+    if (!current) {
+      properties.deleteProperty(key);
+      return;
+    }
+
+    const ttl = current.status === FILE_DONE_STATUS
+      ? FILE_DONE_TTL_MS
+      : FILE_PROCESSING_TTL_MS;
+    if (now - current.timestamp > ttl) {
+      properties.deleteProperty(key);
+    }
+  });
+}
+
+function parseFileProcessMark_(value) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || !parsed.status || !parsed.timestamp) {
+      return null;
+    }
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+function buildFileProcessPropertyKey_(fileId) {
+  return `${FILE_PROCESS_PROPERTY_PREFIX}${fileId}`;
+}
+
+function isFileInInputFolder_(file) {
+  const parents = file.getParents();
+  while (parents.hasNext()) {
+    if (parents.next().getId() === DRIVE_FOLDERS.input) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function moveFile_(file, destFolderId) {
