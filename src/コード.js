@@ -11,10 +11,11 @@ const PARENT_LOG_SIGNATURE = 'PARENT_20260410_V1';
 
 // ---- Driveフォルダ ----
 const DRIVE_FOLDERS = {
-  input:     '1hqQhtQ3CKsu07wsrutiTeQUkw3xFmgV5', // CSVを置くフォルダ
-  processed: '1i9cqp-ZxLnhTnecyru484-CiOix05hZ2', // 処理成功後の移動先
-  error:     '1IRO975sSTLINYdWRfoQpvzkdyq9JguCo', // 処理失敗後の移動先
-  output:    '', // clickpostReport 加工後CSVの出力先（未設定時は入力フォルダと同階層の 04output を使用）
+  input:         '1hqQhtQ3CKsu07wsrutiTeQUkw3xFmgV5', // CSVを置くフォルダ
+  input_delayed: '', // 第2バッチ用フォルダ（input/ が空になってから2分後に処理）
+  processed:     '1i9cqp-ZxLnhTnecyru484-CiOix05hZ2', // 処理成功後の移動先
+  error:         '1IRO975sSTLINYdWRfoQpvzkdyq9JguCo', // 処理失敗後の移動先
+  output:        '', // clickpostReport 加工後CSVの出力先（未設定時は入力フォルダと同階層の 04output を使用）
 };
 
 // ---- 子GAS ウェブアプリURL ----
@@ -48,6 +49,9 @@ const RPP_UNYOU_FILE_PATTERNS = {
   cpc: /^rpp_item_keyword_limelimedou_(\d{8})\d+\.csv$/i,
   rank: /^rpp_keyword_ranking_limelimedou_(\d{8})\d{6}(?:_\d+)?\.csv$/i,
 };
+
+const INPUT_NOW_EMPTY_SINCE_KEY = 'INPUT_NOW_EMPTY_SINCE';
+const DELAYED_WAIT_MS = 2 * 60 * 1000; // 2分
 
 const RPP_UNYOU_PAIR_PROPERTY_PREFIX = 'RPP_UNYOU_PAIR_';
 const FILE_PROCESS_PROPERTY_PREFIX = 'FILE_PROCESS_';
@@ -105,6 +109,13 @@ function processInputFolder() {
     }
 
     processRppUnyouFilePairs_(rppUnyouFiles);
+
+    // input の空状態を記録し、条件を満たせば input_delayed を処理
+    const nowEmpty = !DriveApp.getFolderById(DRIVE_FOLDERS.input).getFiles().hasNext();
+    updateInputNowEmptyTimestamp_(nowEmpty);
+    if (shouldProcessDelayed_()) {
+      processDelayedInputFolder_();
+    }
   } finally {
     lock.releaseLock();
   }
@@ -421,7 +432,7 @@ function postToChildWebApp_(webAppUrl, payload, childDesc, contextLabel) {
   return json;
 }
 
-function processFileWithGuard_(file, processor) {
+function processFileWithGuard_(file, processor, srcFolderId) {
   const fileName = file.getName();
   const fileId = file.getId();
 
@@ -442,7 +453,7 @@ function processFileWithGuard_(file, processor) {
       ? DRIVE_FOLDERS.processed
       : DRIVE_FOLDERS.error;
 
-    moveFile_(file, destinationFolderId);
+    moveFile_(file, destinationFolderId, srcFolderId);
     markFileDone_(fileId, fileName, result.status);
     completed = true;
     logResult_(fileName, result);
@@ -565,19 +576,19 @@ function buildFileProcessPropertyKey_(fileId) {
 }
 
 function isFileInInputFolder_(file) {
+  const validFolders = [DRIVE_FOLDERS.input];
+  if (DRIVE_FOLDERS.input_delayed) validFolders.push(DRIVE_FOLDERS.input_delayed);
+
   const parents = file.getParents();
   while (parents.hasNext()) {
-    if (parents.next().getId() === DRIVE_FOLDERS.input) {
-      return true;
-    }
+    if (validFolders.indexOf(parents.next().getId()) !== -1) return true;
   }
-
   return false;
 }
 
-function moveFile_(file, destFolderId) {
+function moveFile_(file, destFolderId, srcFolderId) {
   const dest = DriveApp.getFolderById(destFolderId);
-  const src  = DriveApp.getFolderById(DRIVE_FOLDERS.input);
+  const src  = DriveApp.getFolderById(srcFolderId || DRIVE_FOLDERS.input);
   dest.addFile(file);
   src.removeFile(file);
 }
@@ -612,6 +623,66 @@ function logResult_(fileName, result) {
 function formatParentLogMessage_(message) {
   const normalizedMessage = message == null ? '' : String(message);
   return `${PARENT_LOG_SIGNATURE} ${normalizedMessage}`.trim();
+}
+
+
+// ============================================================
+// input_delayed 2段階処理
+// ============================================================
+
+function updateInputNowEmptyTimestamp_(isEmpty) {
+  const props = PropertiesService.getScriptProperties();
+  if (isEmpty) {
+    if (!props.getProperty(INPUT_NOW_EMPTY_SINCE_KEY)) {
+      props.setProperty(INPUT_NOW_EMPTY_SINCE_KEY, String(new Date().getTime()));
+      Logger.log('input が空になりました。タイムスタンプを記録します。');
+    }
+  } else {
+    // ファイルが追加されたらタイムスタンプをリセット
+    if (props.getProperty(INPUT_NOW_EMPTY_SINCE_KEY)) {
+      props.deleteProperty(INPUT_NOW_EMPTY_SINCE_KEY);
+      Logger.log('input にファイルが戻ったため、タイムスタンプをリセットしました。');
+    }
+  }
+}
+
+function shouldProcessDelayed_() {
+  if (!DRIVE_FOLDERS.input_delayed) return false;
+  const emptySince = PropertiesService.getScriptProperties().getProperty(INPUT_NOW_EMPTY_SINCE_KEY);
+  if (!emptySince) return false;
+  const elapsed = new Date().getTime() - Number(emptySince);
+  return elapsed >= DELAYED_WAIT_MS;
+}
+
+function processDelayedInputFolder_() {
+  const delayedFolder = DriveApp.getFolderById(DRIVE_FOLDERS.input_delayed);
+  const rppUnyouFiles = [];
+  const files = delayedFolder.getFiles();
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const fileName = file.getName();
+
+    if (isClickpostReportFile_(fileName)) {
+      processFileWithGuard_(file, function() {
+        try { return processClickpostReportFile_(file); }
+        catch (e) { return { status: 'error', message: e.message, rowsImported: 0 }; }
+      }, DRIVE_FOLDERS.input_delayed);
+      continue;
+    }
+
+    if (isRppUnyouManagedFile_(fileName)) {
+      rppUnyouFiles.push(file);
+      continue;
+    }
+
+    processFileWithGuard_(file, function() {
+      try { return dispatchToChild_(file); }
+      catch (e) { return { status: 'error', message: e.message, rowsImported: 0 }; }
+    }, DRIVE_FOLDERS.input_delayed);
+  }
+
+  processRppUnyouFilePairs_(rppUnyouFiles);
 }
 
 
