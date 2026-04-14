@@ -12,7 +12,7 @@ const PARENT_LOG_SIGNATURE = 'PARENT_20260410_V1';
 // ---- Driveフォルダ ----
 const DRIVE_FOLDERS = {
   input:         '1hqQhtQ3CKsu07wsrutiTeQUkw3xFmgV5', // CSVを置くフォルダ
-  input_delayed: '', // 第2バッチ用フォルダ（input/ が空になってから2分後に処理）
+  input_delayed: '1cVHO3_VW2aVaSGQOMz5ISuh6VtnCPoVQ', // 第2バッチ用フォルダ（input/ が空になってから2分後に処理）
   processed:     '1i9cqp-ZxLnhTnecyru484-CiOix05hZ2', // 処理成功後の移動先
   error:         '1IRO975sSTLINYdWRfoQpvzkdyq9JguCo', // 処理失敗後の移動先
   output:        '', // clickpostReport 加工後CSVの出力先（未設定時は入力フォルダと同階層の 04output を使用）
