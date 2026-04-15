@@ -29,7 +29,7 @@ const CHILD_SCRIPTS = [
   },
   {
     patterns: [/.*ピッキング.*\.csv$/i],
-    webAppUrl: 'https://script.google.com/macros/s/AKfycbx-g5YT4kvVG1x4rd3jiDVLrtool1X0gGbaZejJ-VxMXuiTLCjL2_AsK066bzEKQaLK/exec',
+    webAppUrl: 'https://script.google.com/macros/s/AKfycby6S5Sax5Jo-sMM5PnXORHtDvBneImnVo1GcjrejjZBr0UP7g5Cc8jV16pgeVYX2Th5/exec',
     desc: '会津在庫減算取込 (ピッキングCSV)',
   },
   {
