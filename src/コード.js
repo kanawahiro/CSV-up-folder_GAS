@@ -453,9 +453,21 @@ function processFileWithGuard_(file, processor, srcFolderId) {
       ? DRIVE_FOLDERS.processed
       : DRIVE_FOLDERS.error;
 
-    moveFile_(file, destinationFolderId, srcFolderId);
     markFileDone_(fileId, fileName, result.status);
     completed = true;
+
+    try {
+      moveFile_(file, destinationFolderId, srcFolderId);
+    } catch (moveErr) {
+      Logger.log(`moveFile_ 失敗（処理済みマーク済み）fileName=${fileName} err=${moveErr.message}`);
+      logResult_(fileName, {
+        status: result.status,
+        message: `[moveFile_失敗・再処理なし] ${result.message ?? ''} / ${moveErr.message}`,
+        rowsImported: result.rowsImported,
+      });
+      return result;
+    }
+
     logResult_(fileName, result);
     return result;
   } finally {
